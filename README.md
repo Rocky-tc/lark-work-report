@@ -2,7 +2,7 @@
 
 基于“飞书全貌”整理个人日报、周报、月报和指定周期工作总结的通用 [Agent Skill](https://agentskills.io/)。
 
-核心流程遵循开放的 `SKILL.md` 目录结构，不依赖某个特定智能体品牌。Codex、Claude Code、ChatGPT 或其他兼容 Agent Skills 的宿主，都可以在具备相应数据能力时使用它。
+核心流程遵循开放的 `SKILL.md` 目录结构，不依赖某个特定智能体品牌。任何兼容 Agent Skills 的宿主都可以在具备相应数据能力时使用它。
 
 ## 核心能力
 
@@ -60,35 +60,24 @@ Skill 核心只要求宿主把可用能力映射为以下操作：
 
 ## 安装
 
-下载或克隆完整仓库，并把 `lark-work-report/` 放入宿主支持的 Skills 位置。不能只复制 `SKILL.md`，因为流程还依赖 `references/` 和 `scripts/`。
-
-### Claude Code
-
-个人级安装：
+克隆完整仓库：
 
 ```bash
-git clone https://github.com/Rocky-tc/lark-work-report.git ~/.claude/skills/lark-work-report
+git clone https://github.com/Rocky-tc/lark-work-report.git
 ```
 
-项目级安装时，克隆到项目的 `.claude/skills/lark-work-report`。参见 [Claude Code Skills 文档](https://code.claude.com/docs/en/skills)。
+把得到的 `lark-work-report/` 完整目录放入或导入宿主可识别的 Skills 位置，然后让宿主重新发现 Skills。具体位置或导入入口由宿主决定。
 
-### Codex
+必须保持以下相对结构：
 
-```bash
-git clone https://github.com/Rocky-tc/lark-work-report.git ~/.codex/skills/lark-work-report
+```text
+lark-work-report/
+├── SKILL.md
+├── references/
+└── scripts/
 ```
 
-如果设置了 `CODEX_HOME`，则安装到 `$CODEX_HOME/skills/lark-work-report`。
-
-### ChatGPT
-
-下载仓库 ZIP，在支持 Skills 的工作区中通过 Skills 管理界面上传完整 Skill 包。参见 [OpenAI Skills 说明](https://help.openai.com/en/articles/20001066)。
-
-### 其他兼容宿主
-
-按照该宿主的 Agent Skills 安装说明，将完整目录放入其可发现位置或上传完整目录。宿主必须保留 `SKILL.md` 与相对路径结构。
-
-`agents/openai.yaml` 只是可选的 OpenAI 界面元数据；其他宿主可以忽略它，核心流程不读取该文件。
+不能只复制 `SKILL.md`，因为执行流程依赖同目录中的参考文件和脚本。`agents/` 是可选的宿主界面元数据，核心流程不读取它。
 
 ## 数据适配
 
@@ -121,15 +110,7 @@ lark-cli profile list
 使用 lark-work-report 整理 2026-07-01 到 2026-07-15 的工作总结
 ```
 
-不同宿主也可以使用自己的显式调用语法，例如：
-
-```text
-# Codex
-$lark-work-report 整理上周周报
-
-# Claude Code
-/lark-work-report 整理上周周报
-```
+宿主支持显式 Skill 调用时，按宿主自己的语法选择 `lark-work-report`；否则直接使用上述自然语言请求。
 
 可以附加范围、深度和交付方式：
 
@@ -146,8 +127,7 @@ $lark-work-report 整理上周周报
 ```text
 lark-work-report/
 ├── SKILL.md
-├── agents/
-│   └── openai.yaml          # 可选的 OpenAI 界面元数据
+├── agents/                  # 可选的宿主界面元数据
 ├── references/
 │   ├── capability-adapters.md
 │   ├── collection-policy.md

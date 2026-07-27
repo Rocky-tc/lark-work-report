@@ -47,6 +47,15 @@ class PortabilityTests(unittest.TestCase):
         ):
             self.assertIn(operation, text)
 
+    def test_readme_uses_one_generic_install_flow(self):
+        text = (ROOT / "README.md").read_text(encoding="utf-8")
+        install = text.split("## 安装", 1)[1].split("## 数据适配", 1)[0]
+        self.assertIn(
+            "git clone https://github.com/Rocky-tc/lark-work-report.git", install
+        )
+        self.assertNotIn("\n### ", install)
+        self.assertNotRegex(install, r"~/\.[^/]+/skills")
+
     def test_core_relative_markdown_links_resolve(self):
         pattern = re.compile(r"\[[^\]]+\]\(([^)]+\.md)\)")
         for path in CORE_FILES:
