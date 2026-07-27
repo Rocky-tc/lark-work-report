@@ -1,0 +1,4 @@
+interface:
+  display_name: "飞书个人日周月报"
+  short_description: "基于飞书全貌的工作证据生成可核验的个人日报、周报和月报"
+  default_prompt: "使用 $lark-work-report 根据我的飞书工作证据生成本周期工作报告。"
