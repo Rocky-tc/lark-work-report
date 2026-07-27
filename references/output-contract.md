@@ -2,14 +2,14 @@
 
 ## 默认交付
 
-- 新建一篇飞书个人工作报告文档。
+- 输出适配器支持创建并回读时，新建一篇飞书个人工作报告文档；否则交付 Markdown 草稿。
 - 标题包含主体、周期和快照日期。
 - 章节与报告策略一致。
 - 每个关键事实、结果、数字、完成状态和决策带 `[工作来源]` 锚。
 - 独立“待复核”章节只包含待复核候选、原因和 `[待复核来源]` 锚。
 - 页尾披露时间窗、快照时间、覆盖域、权限缺口和 work/uncertain 两类数量。
 
-用户明确要求“只给草稿”时，允许仅在对话输出 Markdown，并从调用预算中扣除创建与回读的 2 次。
+用户明确要求“只给草稿”时，仅输出 Markdown，并从调用预算中扣除创建与回读的 2 次。因能力缺失降级为草稿时，明确说明未创建飞书文档。
 
 ## 写作规则
 
@@ -53,17 +53,20 @@ python3 <skill-dir>/scripts/validate-report.py --profile weekly --file <path-to-
 
 ## 飞书文档创建与回读
 
-1. 完整阅读 `lark-doc` Skill 及其创建格式说明。
-2. 使用个人身份创建：
+1. 完整阅读 [capability-adapters.md](capability-adapters.md)。
+2. 只有输出适配器同时提供 `report.create` 和 `report.fetch` 时才进入本流程。
+3. 使用当前主体的个人身份创建新文档；若选用 `lark-cli` 适配器，命令形式为：
 
    ```bash
-   lark-cli --profile <lark-profile> --as user docs +create <按 lark-doc Skill 填写参数>
+   lark-cli --profile <lark-profile> --as user docs +create <docs-create-arguments>
    ```
 
-3. 从响应取得文档 token 和 URL。
-4. 使用同一 profile 与身份 fetch 新文档。
-5. 回读确认标题、所有必需章节、来源锚和覆盖说明存在。
-6. 回读成功后才执行临时证据清理并宣告完成。
+4. 从响应取得文档稳定标识和 URL。
+5. 使用同一输出适配器与身份回读新文档。
+6. 回读确认标题、所有必需章节、来源锚和覆盖说明存在。
+7. 回读成功后才执行临时证据清理并宣告完成。
+
+没有同时具备创建和回读能力时，跳过本流程，交付经过同一验证器检查的 Markdown 草稿。
 
 ## 默认边界
 

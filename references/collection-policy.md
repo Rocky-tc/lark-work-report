@@ -24,7 +24,7 @@ V1 只收集当前登录用户在确定时间窗内的个人工作活动。先�
 6. 任务创建、完成、更新、延期、重开和阻塞。
 7. 高相关会议纪要、妙记和行动项。
 
-按需读取对应飞书 Skill，使用其中当前有效的命令。每条命令都带：
+完整阅读 [capability-adapters.md](capability-adapters.md)，把宿主可用能力映射到统一操作。优先使用已连接的原生工具或 MCP；使用 `lark-cli` 适配器时，每条命令都带：
 
 ```bash
 lark-cli --profile <lark-profile> --as user
@@ -114,4 +114,4 @@ python3 <skill-dir>/scripts/prepare-fetch-queue.py --file <path-to-candidates.js
 | 话题群或特定接口不覆盖 | 披露接口边界 |
 | 限流或瞬时错误 | 有界重试，重试计入预算 |
 | 缓存不存在 | 切换无缓存预算 |
-| 文档创建失败 | 保留对话草稿，不修改其他对象 |
+| 文档创建或回读能力不可用 | 交付 Markdown 草稿，不修改其他对象 |
