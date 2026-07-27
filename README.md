@@ -4,6 +4,8 @@
 
 核心流程遵循开放的 `SKILL.md` 目录结构，不依赖某个特定智能体品牌。任何兼容 Agent Skills 的宿主都可以在具备相应数据能力时使用它。
 
+当前 Skill 版本：`0.4.1`。
+
 ## 核心能力
 
 - 使用同一套采集与证据引擎生成日报、周报、月报和自定义周期报告。
@@ -11,7 +13,9 @@
 - 每个关键事实、结果、数字、完成状态和决策保留飞书来源锚。
 - 把归属不明确但可能与工作相关的内容放入独立“待复核”章节。
 - 默认只临时保留本次采集证据；用户明确选择后才持久化。
-- 内置周期解析、正文抓取队列过滤和报告结构校验脚本。
+- 内置快照感知的周期解析、适配器能力协商、批量/并行编排、跨域去重、正文队列过滤、接口预算、六段式确定性渲染、临时清理和报告校验脚本。
+- 常规流程直接保存在精简的 `SKILL.md`；详细参考只在异常和高级场景加载。
+- 候选队列和报告正文写入临时文件，终端只返回数量、路径和校验摘要。
 
 ## 平台无关设计
 
@@ -21,7 +25,9 @@ Skill 核心只要求宿主把可用能力映射为以下操作：
 |---|---|
 | `identity.current` | 确认报告主体与时区 |
 | `candidate.list` | 按数据域和时间窗列候选元数据 |
+| `candidate.list_many` | 可选：一次列举多个数据域 |
 | `candidate.fetch` | 按稳定 ID 读取允许抓取的正文 |
+| `candidate.fetch_many` | 可选：一次读取一批允许抓取的正文 |
 | `report.create` | 可选：创建新的飞书报告文档 |
 | `report.fetch` | 可选：回读并验证新文档 |
 
@@ -34,6 +40,8 @@ Skill 核心只要求宿主把可用能力映射为以下操作：
 3. 用户提供的 Markdown、JSON、CSV、文档或消息导出材料。
 
 不同数据域可以混用适配器。若没有实时飞书连接，Skill 仍可基于用户提供的材料生成报告，但必须披露覆盖范围，不能声称完成了飞书全貌采集。
+
+适配器必须先通过机器可读契约校验。能分离“元数据列举”和“正文读取”时才允许广泛发现；搜索即读取正文的宿主只能处理用户点名对象或已有稳定 ID。
 
 ## 隐私边界
 
@@ -66,7 +74,17 @@ Skill 核心只要求宿主把可用能力映射为以下操作：
 git clone https://github.com/Rocky-tc/lark-work-report.git
 ```
 
-把得到的 `lark-work-report/` 完整目录放入或导入宿主可识别的 Skills 位置，然后让宿主重新发现 Skills。具体位置或导入入口由宿主决定。
+然后给你的 AI 智能体或编程工具一条指令：
+
+```text
+请把这个仓库安装为一个 Agent Skill，只保留 SKILL.md、agents/、references/ 和 scripts/ 的运行时结构，然后重新发现 Skills。
+```
+
+如果宿主不支持代为安装，先构建运行包，再把 ZIP 中的 `lark-work-report/` 目录导入宿主可识别的 Skills 位置：
+
+```bash
+python3 tools/build_package.py
+```
 
 必须保持以下相对结构：
 
@@ -122,6 +140,21 @@ lark-cli profile list
 
 输出适配器能创建并回读飞书文档时，默认交付新文档；否则交付经过相同校验的 Markdown 草稿。
 
+输出统一为六段式紧凑报告：摘要、进展与结果、风险、下一周期重点、待复核、来源与覆盖。报告先形成结构化 JSON，再由本地脚本按优先级和固定字段顺序渲染，避免不同宿主自由发挥出不同章节。
+
+## 运行安全
+
+- 当前自然周期按实际 `snapshot` 截断，不把未来时间写进覆盖范围。
+- “上周”“上月”“昨天”由 `--relative previous` 确定性解析。
+- 候选队列拒绝正文、逐字稿、无时区时间和重复稳定 ID，并按字段白名单重建。
+- 候选在正文抓取前按来源锚跨域去重；工作与私人分类冲突会直接停止。
+- 批量和并行波次在执行前一次性原子记账；达到硬上限后拒绝继续调用。
+- 默认证据放在带运行标记的系统临时目录；安全清理器拒绝任意目录。
+- 周期解析、适配器校验、预算选择和计划创建合并为一次本地命令；渲染与校验也合并为一次本地命令。
+- 报告由结构化模型确定性渲染，固定六段式章节、结果优先顺序和简洁空章节。
+- 报告模型采用版本号和严格字段白名单，字段拼写错误不会被静默忽略。
+- 报告校验器检查章节顺序、来源锚与对应账本的真实绑定、时间边界及账本计数。
+
 ## 目录结构
 
 ```text
@@ -130,15 +163,27 @@ lark-work-report/
 ├── agents/                  # 可选的宿主界面元数据
 ├── references/
 │   ├── capability-adapters.md
+│   ├── adapter-contract.schema.json
 │   ├── collection-policy.md
 │   ├── evidence-model.md
 │   ├── output-contract.md
 │   ├── relevance-and-retention.md
+│   ├── report-rendering.md
 │   └── report-profiles.md
 ├── scripts/
+│   ├── contracts.py
+│   ├── finalize-run.py
+│   ├── manage-run.py
 │   ├── prepare-fetch-queue.py
+│   ├── prepare-run.py
+│   ├── render-report.py
 │   ├── resolve-period.py
+│   ├── runtime_utils.py
+│   ├── source_refs.py
+│   ├── validate-adapter.py
 │   └── validate-report.py
+├── tools/
+│   └── build_package.py
 └── tests/
 ```
 
@@ -160,8 +205,11 @@ lark-work-report/
 
 ```bash
 python3 -m unittest discover -s tests -p 'test_*.py'
-python3 -m py_compile scripts/*.py tests/*.py
+python3 -m py_compile scripts/*.py tools/*.py tests/*.py
+python3 tools/build_package.py
 ```
+
+GitHub Actions 会在推送和拉取请求中重复执行编译、测试和可复现运行包构建。生成的 ZIP 只包含运行所需的 `SKILL.md`、`agents/`、`references/` 和 `scripts/`，不包含测试、仓库元数据或本地缓存。
 
 ## 当前边界
 
@@ -169,3 +217,4 @@ python3 -m py_compile scripts/*.py tests/*.py
 - 不自动发送或提交报告，不修改现有飞书对象和权限。
 - 不默认生成关系图、妙搭页面或本地报告缓存。
 - 受接口能力和当前身份权限限制的来源会在覆盖说明中披露。
+- 仓库尚未声明开源许可证；公开可见不等于已经授予复制、修改或再分发权。许可证需由维护者明确选择。

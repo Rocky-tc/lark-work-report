@@ -2,18 +2,7 @@
 
 ## 第一层：元数据候选与抓取队列
 
-每条元数据候选至少包含：
-
-| 字段 | 含义 |
-|---|---|
-| `id` | 本次运行内唯一 ID |
-| `occurred_at` | 行为发生或资料更新时间 |
-| `source_type` | calendar、message、document、task、meeting 等 |
-| `source_ref` | 可核验的链接、ID 或消息锚 |
-| `prefetch_relevance` | work、uncertain、private、chatter |
-| `classification_reason` | 仅基于元数据的预分类理由 |
-
-运行 `prepare-fetch-queue.py` 后，正文抓取队列只保留 `work` 与 `uncertain`。`private`、`chatter` 不得出现在队列输出中。
+候选字段以 [capability-adapters.md](capability-adapters.md) 为准，只允许元数据，不得包含正文或逐字稿。`prepare-fetch-queue.py` 只保留 `work` 与 `uncertain`，生成全局稳定 ID，并按 `source_ref` 跨域去重；重复来源的其他稳定 ID 记入 `alternate_ids`。私人、闲聊及其分类计数不得进入队列文件或终端摘要。
 
 ## 第二层：正文核验记录
 
@@ -42,8 +31,24 @@
 
 - 工作证据账本：只含 `work_relevance=work`，支撑报告事实和结论。
 - 待复核账本：只含 `work_relevance=uncertain`，只渲染到“待复核”章节。
+- 两个账本内的 `source_ref` 分别去重，同一 `source_ref` 不能同时属于两个账本。
+
+用于校验器的最小 JSON 结构为：
+
+```json
+{
+  "work": [{"source_ref": "source://host.lark/docs/doc-1"}],
+  "uncertain": [{"source_ref": "https://example.com/source"}]
+}
+```
 
 待复核账本不能被分析器用于生成成果、结果、完成状态、决策或影响。
+
+最终校验时，工作章节使用的每个 `[工作来源]` 必须能在工作账本中找到完全相同的 `source_ref`；`[待复核来源]` 同理。仅构造一个格式正确但账本中不存在的链接不能通过校验。
+
+## 报告模型
+
+双账本核验完成后，再建立临时结构化报告模型。报告模型只负责信息排序和六段式渲染，不是新的证据层，也不得新增账本中不存在的事实。完整字段契约见 [report-rendering.md](report-rendering.md)。
 
 ## 去重
 

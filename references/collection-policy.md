@@ -14,50 +14,26 @@ V1 只收集当前登录用户在确定时间窗内的个人工作活动。先�
 
 ## 数据域与顺序
 
-所有报告共享以下接口类型，实际分页深度由策略决定：
+先确认当前用户身份，再按收益顺序查询：已有报告缓存，日历与会议，当前用户相关的消息、文档、Wiki、Base、任务、邮件、OKR、审批、会议纪要和行动项。实际覆盖域由适配器能力和用户范围决定。
 
-1. 当前用户身份。
-2. 已生成的日报、周报或月报缓存。
-3. 日历与会议。
-4. 当前用户发出的消息及其必要上下文。
-5. 当前用户创建、编辑、评论、分享或被引用的文档、Wiki、Base。
-6. 任务创建、完成、更新、延期、重开和阻塞。
-7. 高相关会议纪要、妙记和行动项。
-
-完整阅读 [capability-adapters.md](capability-adapters.md)，把宿主可用能力映射到统一操作。优先使用已连接的原生工具或 MCP；使用 `lark-cli` 适配器时，每条命令都带：
-
-```bash
-lark-cli --profile <lark-profile> --as user
-```
+优先使用已授权的宿主连接器或 MCP，其次使用已认证 CLI，最后使用用户导出材料。具体适配语义见 [capability-adapters.md](capability-adapters.md)。
 
 ## 两段式采集
 
 ### 1. 元数据扫描与预分类
 
-优先取时间、来源类型、容器、参与人、标题、引用、分享和工作流标签。元数据同时负责排序、预算分配和正文抓取前的硬过滤。
-
-优先级从高到低：
-
-1. 任务、工作会议、OKR、已有报告引用；
-2. 活跃工作流、客户、产品或交付物关联；
-3. 与同事协作、评论、分享且上下文指向工作；
-4. 仅由时间、标题或同事身份形成的弱信号。
-
-满足以下任一明确条件时，可以预分类为 `private` 或 `chatter` 并跳过正文：
-
-- 对象被飞书或用户显式标为私人，且没有工作任务、会议、协作或引用关系；
-- 元数据明确属于家庭、医疗、个人财务、证件等私人事项；
-- 消息元数据和可见摘要明确是寒暄、表情、祝福、饭局或兴趣闲聊，且没有行动、产出、决策、风险或工作流关系。
-
-仅凭个人空间、私聊、工作时间、同事参与或关键词命中不能判为私人/闲聊。证据不足时标 `uncertain`，进入受控正文核验。
+优先取时间、来源类型、容器、参与人、标题、引用、分享和工作流标签，用于排序、预算分配和抓取前过滤。分类语义以 [relevance-and-retention.md](relevance-and-retention.md) 为准；本文件不重复定义。
 
 把元数据候选写成 JSON 后，必须运行：
 
 ```bash
-python3 <skill-dir>/scripts/prepare-fetch-queue.py --file <path-to-candidates.json>
+python3 scripts/prepare-fetch-queue.py \
+  --file <run-dir>/candidates.json \
+  --run-plan <run-dir>/run-plan.json \
+  --output <run-dir>/fetch-queue.json
 ```
 
-只允许读取脚本输出的 `fetch_queue`。脚本输出只包含 `work` 和 `uncertain`；`private`、`chatter` 只有内部跳过数量，不携带候选详情。
+只允许读取脚本写入队列文件的 `fetch_queue` 和 `fetch_batches`。脚本拒绝已经混入的正文、无时区时间、重复稳定 ID 和非规范来源类型，再按字段白名单重建并跨域去重。队列文件和终端摘要都不保留 `private`、`chatter` 的详情或分类计数。
 
 ### 2. 正文核验
 
@@ -95,6 +71,8 @@ python3 <skill-dir>/scripts/prepare-fetch-queue.py --file <path-to-candidates.js
 | `deep` | 35–50 | 50 | 调用前提示成本 |
 
 `quick` 使用常规预算下界并优先缓存；`standard` 使用常规预算；`deep` 只在用户明确说“deep”“深度报告”或“完整来龙去脉”并获知成本时使用。“尽量找全”“都看看”仍属于 `standard`，不能据此自动把预算扩大到 50 次。
+
+默认运行由 `prepare-run.py` 自动选择 `daily`、`weekly`、`monthly_cached`、`monthly_uncached` 或 `deep`。单次外部调用前执行 `record-call`；同一批或并行波次用 `record-batch` 一次原子预留。它是硬上限执行器，不替代常规预算和收益止损。
 
 ## 分页和止损
 

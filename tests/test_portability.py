@@ -30,7 +30,7 @@ class PortabilityTests(unittest.TestCase):
         keys = {
             line.split(":", 1)[0].strip()
             for line in match.group(1).splitlines()
-            if ":" in line
+            if ":" in line and not line.startswith((" ", "\t"))
         }
         self.assertEqual({"name", "description"}, keys)
 
@@ -66,6 +66,20 @@ class PortabilityTests(unittest.TestCase):
                     resolved.is_file(),
                     f"{path.name} links to missing file {target}",
                 )
+
+    def test_skill_links_conditional_references_directly(self):
+        skill = (ROOT / "SKILL.md").read_text(encoding="utf-8")
+        for name in (
+            "capability-adapters.md",
+            "collection-policy.md",
+            "relevance-and-retention.md",
+            "evidence-model.md",
+            "report-profiles.md",
+            "report-rendering.md",
+            "output-contract.md",
+        ):
+            self.assertIn(f"references/{name}", skill)
+        self.assertFalse((ROOT / "references" / "runtime-contract.md").exists())
 
 
 if __name__ == "__main__":
