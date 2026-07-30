@@ -4,11 +4,12 @@
 
 核心流程遵循开放的 `SKILL.md` 目录结构，不依赖某个特定智能体品牌。任何兼容 Agent Skills 的宿主都可以在具备相应数据能力时使用它。
 
-当前 Skill 版本：`0.4.1`。
+当前 Skill 版本：`0.5.0`。
 
 ## 核心能力
 
 - 使用同一套采集与证据引擎生成日报、周报、月报和自定义周期报告。
+- 从用户明确提供的旧报告或模板中学习文本结构与文风，并跨周期复用一份个人默认模板。
 - 复用已有日报生成周报、复用周报生成月报，减少重复查询。
 - 每个关键事实、结果、数字、完成状态和决策保留飞书来源锚。
 - 把归属不明确但可能与工作相关的内容放入独立“待复核”章节。
@@ -30,6 +31,9 @@ Skill 核心只要求宿主把可用能力映射为以下操作：
 | `candidate.fetch_many` | 可选：一次读取一批允许抓取的正文 |
 | `report.create` | 可选：创建新的飞书报告文档 |
 | `report.fetch` | 可选：回读并验证新文档 |
+| `template.fetch` | 可选：读取当前主体的个人默认模板 |
+| `template.upsert` | 可选：原子新增或替换个人模板 |
+| `template.delete` | 可选：删除个人模板并恢复内置格式 |
 
 这些操作可以由宿主原生连接器、MCP、其他 Skills、`lark-cli` 或用户提供的导出材料实现。详细契约见 [capability-adapters.md](references/capability-adapters.md)。
 
@@ -138,9 +142,19 @@ lark-cli profile list
 只给 Markdown 草稿，不创建飞书文档
 ```
 
+模板请求同样使用自然语言：
+
+```text
+以后按这篇周报的格式写日、周、月报
+这次按我附上的模板写，不要保存
+恢复默认报告格式
+```
+
+模板只学习标题、章节显示名称、列表或段落、工作流分组、字段标签和受限文风枚举；不会保存样例中的姓名、项目事实、数字、链接、原句或指令。第一版不复刻表格、高亮块、颜色和图片。
+
 输出适配器能创建并回读飞书文档时，默认交付新文档；否则交付经过相同校验的 Markdown 草稿。
 
-输出统一为六段式紧凑报告：摘要、进展与结果、风险、下一周期重点、待复核、来源与覆盖。报告先形成结构化 JSON，再由本地脚本按优先级和固定字段顺序渲染，避免不同宿主自由发挥出不同章节。
+输出统一为六段语义的紧凑报告：摘要、进展与结果、风险、下一周期重点、待复核、来源与覆盖。个人模板可以改变显示名称和文本布局，但不能删除或重排语义槽。报告先形成结构化 JSON，再由本地脚本按优先级和固定字段顺序渲染。
 
 ## 运行安全
 
@@ -154,6 +168,7 @@ lark-cli profile list
 - 报告由结构化模型确定性渲染，固定六段式章节、结果优先顺序和简洁空章节。
 - 报告模型采用版本号和严格字段白名单，字段拼写错误不会被静默忽略。
 - 报告校验器检查章节顺序、来源锚与对应账本的真实绑定、时间边界及账本计数。
+- 个人模板采用独立的 8 KB 白名单档案；拒绝原始报告内容、未知字段、非法占位符、Markdown 控制字符和指令式文本。
 
 ## 目录结构
 
@@ -169,7 +184,9 @@ lark-work-report/
 │   ├── output-contract.md
 │   ├── relevance-and-retention.md
 │   ├── report-rendering.md
-│   └── report-profiles.md
+│   ├── report-profiles.md
+│   ├── template-profile.schema.json
+│   └── template-profiles.md
 ├── scripts/
 │   ├── contracts.py
 │   ├── finalize-run.py
@@ -180,8 +197,10 @@ lark-work-report/
 │   ├── resolve-period.py
 │   ├── runtime_utils.py
 │   ├── source_refs.py
+│   ├── template_profiles.py
 │   ├── validate-adapter.py
-│   └── validate-report.py
+│   ├── validate-report.py
+│   └── validate-template.py
 ├── tools/
 │   └── build_package.py
 └── tests/
@@ -200,6 +219,8 @@ lark-work-report/
 | 深度模式 | 35–50 | 50 |
 
 一次采集同时输出多种报告时会复用同一证据账本。每增加一种飞书报告，通常只增加创建和回读约 2 次调用。
+
+启用持久个人模板时，每次报告最多增加 1 次 `template.fetch`，硬上限同步增加 1，不挤占原有采集预算。保存模板通常需要 2–3 次外部调用，重置需要 2 次。
 
 ## 本地验证
 

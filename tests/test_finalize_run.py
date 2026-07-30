@@ -1,4 +1,5 @@
 import json
+import hashlib
 import subprocess
 import sys
 import unittest
@@ -42,6 +43,44 @@ def report_model():
             "access_gaps": [],
             "work_count": 1,
             "uncertain_count": 0,
+        },
+    }
+
+
+def template_profile():
+    names = {
+        "summary": ("今日看点", "本周看点", "月度看点"),
+        "progress": ("今日成果", "本周成果", "月度成果"),
+        "risks": ("风险提醒", "风险提醒", "风险提醒"),
+        "next": ("明日计划", "下周计划", "下月计划"),
+        "uncertain": ("请我确认", "请我确认", "请我确认"),
+        "coverage": ("依据与范围", "依据与范围", "依据与范围"),
+    }
+    return {
+        "schema_version": 1,
+        "template_id": "default",
+        "source_fingerprint": "sha256:" + hashlib.sha256(b"sample").hexdigest(),
+        "title_pattern": "{subject}{period_label}｜{period_range}",
+        "sections": {
+            slot: {
+                "labels": dict(zip(("daily", "weekly", "monthly"), labels)),
+                "item_style": "bullet",
+            }
+            for slot, labels in names.items()
+        },
+        "workstream_layout": "inline",
+        "field_labels": {
+            "impact": "影响",
+            "decision": "决策",
+            "progress": "进展",
+            "assistance": "需协助",
+            "purpose": "目标",
+            "reason": "原因",
+        },
+        "tone": {
+            "register": "concise",
+            "voice": "neutral",
+            "density": "compact",
         },
     }
 
@@ -103,6 +142,44 @@ class FinalizeRunTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 2)
         self.assertIn("must remain inside", result.stderr)
+
+    def test_default_template_is_applied_with_identity_and_period_context(self):
+        (self.run_dir / "run-plan.json").write_text(
+            json.dumps(
+                {
+                    "period": {
+                        "routed_profile": "weekly",
+                        "title_period": "2026-07-20 至 2026-07-26",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        (self.run_dir / "identity.json").write_text(
+            json.dumps({"display_name": "张三"}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        (self.run_dir / "template-profile.json").write_text(
+            json.dumps(template_profile(), ensure_ascii=False),
+            encoding="utf-8",
+        )
+        result = run(FINALIZER, "--run-dir", str(self.run_dir))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["template_id"], "default")
+        markdown = Path(payload["report_file"]).read_text(encoding="utf-8")
+        self.assertIn("# 张三个人周报｜2026-07-20 至 2026-07-26", markdown)
+        self.assertIn("## 本周看点", markdown)
+
+    def test_template_without_identity_context_fails_closed(self):
+        (self.run_dir / "template-profile.json").write_text(
+            json.dumps(template_profile(), ensure_ascii=False),
+            encoding="utf-8",
+        )
+        result = run(FINALIZER, "--run-dir", str(self.run_dir))
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("requires identity", result.stderr)
+        self.assertFalse((self.run_dir / "report.md").exists())
 
 
 if __name__ == "__main__":

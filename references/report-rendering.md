@@ -6,6 +6,8 @@
 
 不要绕过渲染器直接自由撰写最终报告。
 
+存在 `<run-dir>/template-profile.json` 时，定稿器先按 [template-profiles.md](template-profiles.md) 校验档案，再替换标题结构、章节显示名称、条目形式、字段标签和工作流分组。六个语义槽、事实字段、来源锚和结果优先顺序保持不变；没有模板时输出必须与内置格式一致。
+
 ## 六层信息
 
 | 顺序 | 语义 | 日报 | 周报 | 月报 |
@@ -86,7 +88,9 @@
 ```bash
 python3 scripts/render-report.py \
   --file <run-dir>/report-model.json \
+  --template-file <run-dir>/template-profile.json \
+  --context-file <run-dir>/template-context.json \
   --output <run-dir>/report.md
 ```
 
-默认把报告模型和 Markdown 放在 `prepare-run.py` 返回的临时目录中。标准流程使用 `finalize-run.py` 一次完成渲染与账本校验；`render-report.py` 和 `validate-report.py` 是排错时使用的底层命令。报告中的每个工作来源必须存在于 `work` 账本，每个待复核来源必须存在于 `uncertain` 账本。
+模板和上下文参数均可选；无模板时不要创建空档案。标准流程使用 `finalize-run.py` 从 `identity.json` 与 `run-plan.json` 构造标题上下文，并一次完成渲染与账本校验；`render-report.py` 和 `validate-report.py` 是排错时使用的底层命令。报告中的每个工作来源必须存在于 `work` 账本，每个待复核来源必须存在于 `uncertain` 账本。

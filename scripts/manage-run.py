@@ -37,14 +37,22 @@ def write_state(run_dir, state):
     pending.replace(run_dir / STATE_FILE)
 
 
-def create(profile):
+def create(profile, template_call_count=0):
+    if (
+        isinstance(template_call_count, bool)
+        or not isinstance(template_call_count, int)
+        or template_call_count not in (0, 1)
+    ):
+        raise ValueError("template_call_count must be 0 or 1")
     run_dir = Path(tempfile.mkdtemp(prefix=PREFIX)).resolve()
     state = {
         "schema_version": 1,
         "run_id": str(uuid.uuid4()),
         "retention_mode": "ephemeral",
         "profile": profile,
-        "hard_limit": HARD_LIMITS[profile],
+        "base_hard_limit": HARD_LIMITS[profile],
+        "template_call_count": template_call_count,
+        "hard_limit": HARD_LIMITS[profile] + template_call_count,
         "call_count": 0,
         "calls": [],
         "created_at": now(),
@@ -82,7 +90,12 @@ def read_state(run_dir):
     profile = state.get("profile")
     if profile not in HARD_LIMITS:
         raise ValueError("managed run marker has an invalid profile")
-    if state.get("hard_limit") != HARD_LIMITS[profile]:
+    template_call_count = state.get("template_call_count", 0)
+    if template_call_count not in (0, 1):
+        raise ValueError("managed run marker has an invalid template call count")
+    if state.get("base_hard_limit", HARD_LIMITS[profile]) != HARD_LIMITS[profile]:
+        raise ValueError("managed run marker has an invalid base hard limit")
+    if state.get("hard_limit") != HARD_LIMITS[profile] + template_call_count:
         raise ValueError("managed run marker has an invalid hard limit")
     run_id = state.get("run_id")
     if not isinstance(run_id, str) or not run_id:
@@ -168,6 +181,12 @@ def build_parser():
 
     create_parser = subparsers.add_parser("create")
     create_parser.add_argument("--profile", required=True, choices=tuple(HARD_LIMITS))
+    create_parser.add_argument(
+        "--template-call-count",
+        type=int,
+        choices=(0, 1),
+        default=0,
+    )
 
     record_parser = subparsers.add_parser("record-call")
     record_parser.add_argument("--run-dir", required=True)
@@ -192,7 +211,7 @@ def main():
     args = build_parser().parse_args()
     try:
         if args.command == "create":
-            result = create(args.profile)
+            result = create(args.profile, args.template_call_count)
         elif args.command == "record-call":
             result = record_call(args.run_dir, args.domain, args.operation)
         elif args.command == "record-batch":

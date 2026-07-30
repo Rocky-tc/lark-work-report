@@ -43,6 +43,12 @@ PROFILE_SECTIONS = {
     ),
 }
 
+PROFILE_PERIOD_LABELS = {
+    "daily": "个人日报",
+    "weekly": "个人周报",
+    "monthly": "个人月报",
+}
+
 STATUS_LABELS = {
     "completed": "已完成",
     "in_progress": "进行中",

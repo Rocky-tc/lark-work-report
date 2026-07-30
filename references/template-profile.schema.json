@@ -1,0 +1,130 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "lark-work-report personal template profile",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "template_id",
+    "source_fingerprint",
+    "title_pattern",
+    "sections",
+    "workstream_layout",
+    "field_labels",
+    "tone"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "template_id": {"const": "default"},
+    "source_fingerprint": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "title_pattern": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160
+    },
+    "sections": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "summary",
+        "progress",
+        "risks",
+        "next",
+        "uncertain",
+        "coverage"
+      ],
+      "properties": {
+        "summary": {"$ref": "#/$defs/section"},
+        "progress": {"$ref": "#/$defs/section"},
+        "risks": {"$ref": "#/$defs/section"},
+        "next": {"$ref": "#/$defs/section"},
+        "uncertain": {"$ref": "#/$defs/section"},
+        "coverage": {"$ref": "#/$defs/coverageSection"}
+      }
+    },
+    "workstream_layout": {
+      "enum": ["inline", "subsection"]
+    },
+    "field_labels": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "impact",
+        "decision",
+        "progress",
+        "assistance",
+        "purpose",
+        "reason"
+      ],
+      "properties": {
+        "impact": {"$ref": "#/$defs/shortLabel"},
+        "decision": {"$ref": "#/$defs/shortLabel"},
+        "progress": {"$ref": "#/$defs/shortLabel"},
+        "assistance": {"$ref": "#/$defs/shortLabel"},
+        "purpose": {"$ref": "#/$defs/shortLabel"},
+        "reason": {"$ref": "#/$defs/shortLabel"}
+      }
+    },
+    "tone": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["register", "voice", "density"],
+      "properties": {
+        "register": {
+          "enum": ["concise", "formal", "direct", "narrative"]
+        },
+        "voice": {
+          "enum": ["neutral", "first_person"]
+        },
+        "density": {
+          "enum": ["compact", "standard"]
+        }
+      }
+    }
+  },
+  "$defs": {
+    "shortLabel": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 16
+    },
+    "sectionLabel": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 48
+    },
+    "labels": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["daily", "weekly", "monthly"],
+      "properties": {
+        "daily": {"$ref": "#/$defs/sectionLabel"},
+        "weekly": {"$ref": "#/$defs/sectionLabel"},
+        "monthly": {"$ref": "#/$defs/sectionLabel"}
+      }
+    },
+    "section": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["labels", "item_style"],
+      "properties": {
+        "labels": {"$ref": "#/$defs/labels"},
+        "item_style": {
+          "enum": ["bullet", "numbered", "paragraph"]
+        }
+      }
+    },
+    "coverageSection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["labels", "item_style"],
+      "properties": {
+        "labels": {"$ref": "#/$defs/labels"},
+        "item_style": {"const": "bullet"}
+      }
+    }
+  }
+}

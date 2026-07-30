@@ -1,4 +1,5 @@
 import json
+import hashlib
 import subprocess
 import sys
 import tempfile
@@ -11,7 +12,7 @@ SCRIPT = ROOT / "scripts" / "prepare-run.py"
 MANAGER = ROOT / "scripts" / "manage-run.py"
 
 
-def adapter_manifest(*, parallel=False, batch=False):
+def adapter_manifest(*, parallel=False, batch=False, template=False):
     listed = {
         "available": True,
         "metadata_only": True,
@@ -35,6 +36,9 @@ def adapter_manifest(*, parallel=False, batch=False):
             },
             "report.create": {"available": False},
             "report.fetch": {"available": False},
+            "template.fetch": {"available": template},
+            "template.upsert": {"available": template},
+            "template.delete": {"available": template},
         },
     }
 
@@ -48,6 +52,44 @@ def offline_manifest():
             "candidate.fetch": {"available": False},
             "report.create": {"available": False},
             "report.fetch": {"available": False},
+        },
+    }
+
+
+def valid_template():
+    names = {
+        "summary": ("今日摘要", "本周摘要", "月度摘要"),
+        "progress": ("工作进展与结果", "工作流进展与结果", "目标与工作流进展"),
+        "risks": ("风险与需协助事项", "风险与需协助事项", "风险与依赖"),
+        "next": ("明日重点", "下周重点", "下月重点"),
+        "uncertain": ("待复核", "待复核", "待复核"),
+        "coverage": ("来源与覆盖", "来源与覆盖", "来源与覆盖"),
+    }
+    return {
+        "schema_version": 1,
+        "template_id": "default",
+        "source_fingerprint": "sha256:" + hashlib.sha256(b"sample").hexdigest(),
+        "title_pattern": "{subject}{period_label}｜{period_range}",
+        "sections": {
+            slot: {
+                "labels": dict(zip(("daily", "weekly", "monthly"), labels)),
+                "item_style": "bullet",
+            }
+            for slot, labels in names.items()
+        },
+        "workstream_layout": "inline",
+        "field_labels": {
+            "impact": "影响",
+            "decision": "决策",
+            "progress": "进展",
+            "assistance": "需协助",
+            "purpose": "目标",
+            "reason": "原因",
+        },
+        "tone": {
+            "register": "concise",
+            "voice": "neutral",
+            "density": "compact",
         },
     }
 
@@ -135,6 +177,81 @@ class PrepareRunTests(unittest.TestCase):
             if "run_dir" in locals():
                 cleanup(run_dir)
             tmp.cleanup()
+
+    def test_auto_template_fetch_is_planned_and_budgeted(self):
+        tmp, result = run_prepare(adapter_manifest(template=True))
+        try:
+            self.assertEqual(result.returncode, 0, result.stderr)
+            summary = json.loads(result.stdout)
+            run_dir = summary["run_dir"]
+            plan = json.loads(Path(summary["plan_file"]).read_text(encoding="utf-8"))
+            self.assertEqual(summary["template_call_count"], 1)
+            self.assertEqual(summary["template_mode"], "auto")
+            self.assertEqual(
+                plan["template_call"],
+                {
+                    "adapter_id": "test.adapter",
+                    "operation": "template.fetch",
+                    "template_id": "default",
+                },
+            )
+            state = json.loads(
+                (Path(run_dir) / ".run-state.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(state["base_hard_limit"], 32)
+            self.assertEqual(state["hard_limit"], 33)
+        finally:
+            if "run_dir" in locals():
+                cleanup(run_dir)
+            tmp.cleanup()
+
+    def test_template_mode_none_skips_fetch(self):
+        tmp, result = run_prepare(
+            adapter_manifest(template=True),
+            "--template-mode",
+            "none",
+        )
+        try:
+            self.assertEqual(result.returncode, 0, result.stderr)
+            summary = json.loads(result.stdout)
+            run_dir = summary["run_dir"]
+            plan = json.loads(Path(summary["plan_file"]).read_text(encoding="utf-8"))
+            self.assertEqual(summary["template_call_count"], 0)
+            self.assertEqual(plan["template_mode"], "none")
+            self.assertIsNone(plan["template_call"])
+        finally:
+            if "run_dir" in locals():
+                cleanup(run_dir)
+            tmp.cleanup()
+
+    def test_one_off_template_is_copied_without_persistent_fetch(self):
+        with tempfile.TemporaryDirectory() as template_tmp:
+            template_file = Path(template_tmp) / "template.json"
+            template_file.write_text(
+                json.dumps(valid_template(), ensure_ascii=False),
+                encoding="utf-8",
+            )
+            tmp, result = run_prepare(
+                adapter_manifest(template=True),
+                "--template-file",
+                str(template_file),
+            )
+            try:
+                self.assertEqual(result.returncode, 0, result.stderr)
+                summary = json.loads(result.stdout)
+                run_dir = summary["run_dir"]
+                plan = json.loads(
+                    Path(summary["plan_file"]).read_text(encoding="utf-8")
+                )
+                self.assertEqual(summary["template_mode"], "one_off")
+                self.assertEqual(summary["template_call_count"], 0)
+                self.assertIsNone(plan["template_call"])
+                copied = Path(run_dir) / "template-profile.json"
+                self.assertEqual(json.loads(copied.read_text()), valid_template())
+            finally:
+                if "run_dir" in locals():
+                    cleanup(run_dir)
+                tmp.cleanup()
 
     def test_unassigned_domains_are_reported_without_extra_details(self):
         tmp, result = run_prepare(

@@ -10,11 +10,8 @@ from pathlib import Path
 
 from contracts import PROFILE_SECTIONS
 from source_refs import SOURCE_TARGET, is_valid_source_ref
+from template_profiles import field_labels, load as load_template, section_settings
 
-
-EVIDENCE_SECTIONS = {
-    profile: set(sections[:3]) for profile, sections in PROFILE_SECTIONS.items()
-}
 
 WORK_SOURCE_LINK = re.compile(rf"\[工作来源\]\(({SOURCE_TARGET})\)")
 UNCERTAIN_SOURCE_LINK = re.compile(rf"\[待复核来源\]\(({SOURCE_TARGET})\)")
@@ -125,11 +122,14 @@ def validate_ledger(ledger, coverage_counts, errors):
     return refs
 
 
-def validate(markdown, profile, ledger):
+def validate(markdown, profile, ledger, template=None):
     errors = []
     warnings = []
     sections, headings = split_sections(markdown)
-    required = PROFILE_SECTIONS[profile]
+    settings = section_settings(template, profile)
+    required = tuple(setting["label"] for setting in settings)
+    evidence_sections = set(required[:3])
+    reason_label = field_labels(template)["reason"]
 
     if not re.search(r"^#\s+\S+", markdown, re.MULTILINE):
         errors.append("缺少一级标题")
@@ -148,7 +148,7 @@ def validate(markdown, profile, ledger):
     if re.search(r"\b(?:TODO|TBD)\b", markdown, re.IGNORECASE):
         errors.append("报告包含 TODO/TBD 占位符")
 
-    for name in EVIDENCE_SECTIONS[profile]:
+    for name in evidence_sections:
         for raw_line in sections.get(name, []):
             line = raw_line.strip()
             if not line or line.startswith(("###", "```", "|")) or EMPTY_ITEM.match(line):
@@ -156,14 +156,15 @@ def validate(markdown, profile, ledger):
             if not WORK_SOURCE_LINK.search(line):
                 errors.append(f"章节“{name}”的事实条目缺少工作来源锚：{line}")
 
-    for raw_line in sections.get("待复核", []):
+    uncertain_name = required[4]
+    for raw_line in sections.get(uncertain_name, []):
         line = raw_line.strip()
         if not line or line.startswith(("###", "```", "|")) or EMPTY_ITEM.match(line):
             continue
-        if "原因" not in line:
-            errors.append(f"章节“待复核”的候选缺少待复核原因：{line}")
+        if reason_label not in line:
+            errors.append(f"章节“{uncertain_name}”的候选缺少待复核原因：{line}")
         if not UNCERTAIN_SOURCE_LINK.search(line):
-            errors.append(f"章节“待复核”的候选缺少待复核来源锚：{line}")
+            errors.append(f"章节“{uncertain_name}”的候选缺少待复核来源锚：{line}")
 
     coverage_name = required[-1]
     coverage = "\n".join(sections.get(coverage_name, []))
@@ -205,6 +206,7 @@ def build_parser():
     parser.add_argument("--profile", required=True, choices=tuple(PROFILE_SECTIONS))
     parser.add_argument("--file", required=True)
     parser.add_argument("--ledger-file", required=True)
+    parser.add_argument("--template-file")
     return parser
 
 
@@ -213,10 +215,14 @@ def main():
     try:
         markdown = Path(args.file).read_text(encoding="utf-8")
         ledger = json.loads(Path(args.ledger_file).read_text(encoding="utf-8"))
+        template = load_template(args.template_file) if args.template_file else None
     except (OSError, json.JSONDecodeError) as exc:
         print(json.dumps({"error": str(exc)}, ensure_ascii=False), file=sys.stderr)
         return 2
-    result = validate(markdown, args.profile, ledger)
+    except ValueError as exc:
+        print(json.dumps({"error": str(exc)}, ensure_ascii=False), file=sys.stderr)
+        return 2
+    result = validate(markdown, args.profile, ledger, template)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0 if result["ok"] else 1
 

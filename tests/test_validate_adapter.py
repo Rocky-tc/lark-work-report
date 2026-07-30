@@ -21,7 +21,7 @@ def run_validator(payload):
         )
 
 
-def manifest(metadata_only=True, report_fetch=True):
+def manifest(metadata_only=True, report_fetch=True, template=False):
     return {
         "adapter_id": "host.lark",
         "capabilities": {
@@ -36,6 +36,9 @@ def manifest(metadata_only=True, report_fetch=True):
             "candidate.fetch_many": {"available": False},
             "report.create": {"available": True},
             "report.fetch": {"available": report_fetch},
+            "template.fetch": {"available": template},
+            "template.upsert": {"available": template},
+            "template.delete": {"available": template},
         },
     }
 
@@ -50,6 +53,35 @@ class ValidateAdapterTests(unittest.TestCase):
         self.assertTrue(payload["identity_available"])
         self.assertEqual(payload["metadata_strategy"], "serial")
         self.assertEqual(payload["fetch_strategy"], "serial")
+        self.assertEqual(payload["template_mode"], "none")
+
+    def test_template_storage_requires_verified_read_write_set(self):
+        result = run_validator(manifest(template=True))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["template_mode"], "read_write")
+        self.assertEqual(payload["template_fetch_operation"], "template.fetch")
+
+    def test_template_write_without_delete_fails(self):
+        payload = manifest()
+        payload["capabilities"]["template.fetch"] = {"available": True}
+        payload["capabilities"]["template.upsert"] = {"available": True}
+        payload["capabilities"]["template.delete"] = {"available": False}
+        result = run_validator(payload)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "template.upsert and template.delete must be available together",
+            json.loads(result.stdout)["errors"],
+        )
+
+    def test_template_fetch_only_is_read_only(self):
+        payload = manifest()
+        payload["capabilities"]["template.fetch"] = {"available": True}
+        payload["capabilities"]["template.upsert"] = {"available": False}
+        payload["capabilities"]["template.delete"] = {"available": False}
+        result = run_validator(payload)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(json.loads(result.stdout)["template_mode"], "read_only")
 
     def test_merged_read_adapter_is_explicit_only(self):
         result = run_validator(manifest(metadata_only=False))

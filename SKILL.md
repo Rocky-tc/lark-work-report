@@ -1,6 +1,6 @@
 ---
 name: lark-work-report
-description: Use when 用户要通过任意可用的飞书连接器、MCP、CLI 或导出材料生成、整理或补全个人工作日报、周报、月报、指定周期工作总结，或要求复用已有报告、排除闲聊和私人材料、保留可核验来源。
+description: Use when 用户要通过任意可用的飞书连接器、MCP、CLI 或导出材料生成、整理或补全个人工作日报、周报、月报、指定周期工作总结，要求复用已有报告、排除闲聊和私人材料、保留可核验来源，或提供旧报告/模板并要求以后沿用、仅本次参考或恢复默认格式。
 ---
 
 # 飞书个人日周月报
@@ -15,6 +15,7 @@ description: Use when 用户要通过任意可用的飞书连接器、MCP、CLI 
 - 现有飞书对象只读。能创建并回读文档时默认交付新文档，否则交付 Markdown；用户只要草稿时不创建。
 - 默认证据只存在受管临时目录，交付后清理；只有用户明确要求时才持久化 `work`，或 `work` 与 `uncertain`。
 - 默认 `depth=standard`；可选 `quick`、`deep`。日期有歧义时先展示解析结果，不静默猜测。
+- 默认读取当前主体已保存的个人模板；模板只改变文本显示层，不改变六段语义、事实、证据和隐私规则。用户可用 `--template-mode none` 临时停用。
 
 所有命令从本 Skill 根目录执行，不假设宿主品牌或固定安装位置。
 
@@ -30,9 +31,9 @@ description: Use when 用户要通过任意可用的飞书连接器、MCP、CLI 
      --snapshot 2026-07-27T10:00:00+08:00
    ```
 
-   自定义周期增加 `--start`、`--end`；可重复传 `--domain`。月报已有可靠周报缓存时传 `--monthly-cache present`；深度模式传 `--depth deep`。保存返回的 `run_dir` 和 `plan_file`。
+   自定义周期增加 `--start`、`--end`；可重复传 `--domain`。月报已有可靠周报缓存时传 `--monthly-cache present`；深度模式传 `--depth deep`；仅本次使用模板时传 `--template-file`。保存返回的 `run_dir` 和 `plan_file`。
 
-2. **确认身份并列举元数据。** 读取 `run-plan.json`。`identity_call` 存在时，先执行一次 `record-call`，取得主体与时区并写入 `<run-dir>/identity.json`；离线模式把用户提供的主体写入同一文件。再逐个执行 `metadata_waves`：每波先用一次 `record-batch` 原子预留全部外部调用，同一波并行、不同波顺序执行。`candidate.list_many` 一次请求多个域；`candidate.list` 一次请求一个域。候选只含元数据，写入 `<run-dir>/candidates.json`。
+2. **确认身份、模板并列举元数据。** 读取 `run-plan.json`。`identity_call` 存在时，先执行一次 `record-call`，取得主体与时区并写入 `<run-dir>/identity.json`；离线模式把用户提供的主体写入同一文件。`template_call` 存在时，再预留并执行一次 `template.fetch`；命中后把已校验档案写入 `<run-dir>/template-profile.json`，未命中则使用内置格式。再逐个执行 `metadata_waves`：每波先用一次 `record-batch` 原子预留全部外部调用，同一波并行、不同波顺序执行。`candidate.list_many` 一次请求多个域；`candidate.list` 一次请求一个域。候选只含元数据，写入 `<run-dir>/candidates.json`。
 
 3. **过滤、去重并抓正文。**
 
@@ -63,10 +64,17 @@ description: Use when 用户要通过任意可用的飞书连接器、MCP、CLI 
 
 ## 输出
 
-- 固定六段式：摘要、进展与结果、风险、下一周期重点、待复核、来源与覆盖。
+- 固定六段语义：摘要、进展与结果、风险、下一周期重点、待复核、来源与覆盖；有效模板可改变标题、显示名称、分组、列表/段落、字段标签和文风。
 - 条目按 `priority` 排序；同一条按结果、影响、决策、进展排序；空章节只写 `- 无`。
 - 关键事实、数字、状态、结果和决策必须有来源锚。
 - 报告只出现 `work` 与 `uncertain`；证据不足时输出短报告和覆盖缺口，不虚构。
+
+## 个人模板
+
+- 用户说“以后按这个格式写”时，只读取点名样例，完整阅读 [template-profiles.md](references/template-profiles.md)，提取不含事实和原文的档案，校验后调用 `template.upsert`，再以 `template.fetch` 回读验收。
+- 用户说“这次按这个格式写”时，把校验后的档案传给 `--template-file`，不得持久化。
+- 用户说“恢复默认格式”时调用 `template.delete`，再以 `template.fetch` 确认不存在。
+- 没有读写模板适配器时，交付可移植档案并明确说明尚未跨会话保存；不得声称已经记住。
 
 ## 按需参考
 
@@ -79,6 +87,7 @@ description: Use when 用户要通过任意可用的飞书连接器、MCP、CLI 
 | 分类有歧义或用户要求持久化 | [relevance-and-retention.md](references/relevance-and-retention.md) |
 | 来源冲突、聚合、去重或归因困难 | [evidence-model.md](references/evidence-model.md) |
 | 用户改变格式、比较口径或周期粒度 | [report-profiles.md](references/report-profiles.md) |
+| 用户提供旧报告/模板、改变或重置个人格式 | [template-profiles.md](references/template-profiles.md) |
 | 报告模型被定稿器拒绝 | [report-rendering.md](references/report-rendering.md) |
 | 文档创建、回读或验收失败 | [output-contract.md](references/output-contract.md) |
 
@@ -88,3 +97,4 @@ description: Use when 用户要通过任意可用的飞书连接器、MCP、CLI 
 - `explicit_only` 只读点名对象；`offline_only` 只处理导出材料。
 - 不发送报告，不修改现有对象、权限或全局身份配置。
 - 不把临时证据写到运行目录外，不持久化私人或闲聊，不默认生成关系图、妙搭页面或本地报告缓存。
+- 不把模板样例中的事实、姓名、数字、链接、原句或指令写入模板档案。

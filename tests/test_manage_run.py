@@ -71,6 +71,24 @@ class ManageRunTests(unittest.TestCase):
         finally:
             run("cleanup", "--run-dir", run_dir)
 
+    def test_template_fetch_adds_one_call_without_reducing_collection_budget(self):
+        created = run(
+            "create",
+            "--profile",
+            "daily",
+            "--template-call-count",
+            "1",
+        )
+        self.assertEqual(created.returncode, 0, created.stderr)
+        payload = json.loads(created.stdout)
+        run_dir = payload["run_dir"]
+        try:
+            self.assertEqual(payload["base_hard_limit"], 18)
+            self.assertEqual(payload["template_call_count"], 1)
+            self.assertEqual(payload["hard_limit"], 19)
+        finally:
+            run("cleanup", "--run-dir", run_dir)
+
     def test_record_batch_reserves_parallel_wave_atomically(self):
         created = run("create", "--profile", "daily")
         run_dir = json.loads(created.stdout)["run_dir"]

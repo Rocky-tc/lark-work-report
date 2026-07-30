@@ -56,6 +56,9 @@ def validate(payload):
     fetched_many = capability(capabilities, "candidate.fetch_many")
     created = capability(capabilities, "report.create")
     report_fetched = capability(capabilities, "report.fetch")
+    template_fetched = capability(capabilities, "template.fetch")
+    template_upserted = capability(capabilities, "template.upsert")
+    template_deleted = capability(capabilities, "template.delete")
 
     domains = []
     list_parallelism = 1
@@ -140,6 +143,18 @@ def validate(payload):
     if created.get("available") and not report_fetched.get("available"):
         errors.append("report.create requires report.fetch for verified delivery")
 
+    if template_upserted.get("available") != template_deleted.get("available"):
+        errors.append(
+            "template.upsert and template.delete must be available together"
+        )
+    if (
+        template_upserted.get("available") or template_deleted.get("available")
+    ) and not template_fetched.get("available"):
+        errors.append(
+            "template.upsert and template.delete require template.fetch "
+            "for verified persistence"
+        )
+
     if (
         listed.get("available")
         and listed.get("metadata_only") is True
@@ -183,12 +198,32 @@ def validate(payload):
         if created.get("available") and report_fetched.get("available")
         else "markdown"
     )
+    if (
+        template_fetched.get("available")
+        and template_upserted.get("available")
+        and template_deleted.get("available")
+    ):
+        template_mode = "read_write"
+    elif template_fetched.get("available"):
+        template_mode = "read_only"
+    else:
+        template_mode = "none"
     return {
         "ok": not errors,
         "adapter_id": adapter_id,
         "identity_available": identity.get("available", False),
         "collection_mode": collection_mode,
         "delivery_mode": delivery_mode,
+        "template_mode": template_mode,
+        "template_fetch_operation": (
+            "template.fetch" if template_fetched.get("available") else None
+        ),
+        "template_upsert_operation": (
+            "template.upsert" if template_upserted.get("available") else None
+        ),
+        "template_delete_operation": (
+            "template.delete" if template_deleted.get("available") else None
+        ),
         "domains": domains,
         "metadata_strategy": metadata_strategy,
         "list_operation": list_operation,

@@ -77,6 +77,7 @@ class PortabilityTests(unittest.TestCase):
             "report-profiles.md",
             "report-rendering.md",
             "output-contract.md",
+            "template-profiles.md",
         ):
             self.assertIn(f"references/{name}", skill)
         self.assertFalse((ROOT / "references" / "runtime-contract.md").exists())

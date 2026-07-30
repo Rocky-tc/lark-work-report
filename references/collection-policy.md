@@ -74,6 +74,8 @@ python3 scripts/prepare-fetch-queue.py \
 
 默认运行由 `prepare-run.py` 自动选择 `daily`、`weekly`、`monthly_cached`、`monthly_uncached` 或 `deep`。单次外部调用前执行 `record-call`；同一批或并行波次用 `record-batch` 一次原子预留。它是硬上限执行器，不替代常规预算和收益止损。
 
+`template.fetch` 被规划时，`prepare-run.py` 给本次运行单独增加 1 次模板调用额度；该额度只能用于读取个人模板，不减少下表中的采集预算。一次性模板和 `--template-mode none` 不增加额度。
+
 ## 分页和止损
 
 - 使用较大的安全 `page_size`，但不要把 `has_more=false` 当成唯一停止条件。

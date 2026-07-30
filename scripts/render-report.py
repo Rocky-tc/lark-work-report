@@ -9,6 +9,14 @@ from pathlib import Path
 
 from contracts import PROFILE_SECTIONS, STATUS_LABELS
 from source_refs import is_valid_source_ref
+from template_profiles import (
+    field_labels as resolved_field_labels,
+    load as load_template,
+    render_title,
+    section_settings,
+    validate as validate_template,
+    workstream_layout as resolved_workstream_layout,
+)
 
 
 MODEL_FIELDS = {
@@ -113,8 +121,26 @@ def sentence(parts):
     return "；".join(cleaned) + "。"
 
 
-def render_summary(items):
-    lines = []
+def format_items(items, style):
+    if not items:
+        return ["- 无"]
+    if style == "bullet":
+        return [f"- {item}" for item in items]
+    if style == "numbered":
+        return [f"{index}. {item}" for index, item in enumerate(items, start=1)]
+    if style == "paragraph":
+        lines = []
+        for index, item in enumerate(items):
+            if index:
+                lines.append("")
+            lines.append(item)
+        return lines
+    raise ValueError(f"unsupported item style: {style}")
+
+
+def render_summary(items, style="bullet", labels=None):
+    contents = []
+    labels = labels or resolved_field_labels(None)
     for index, item in enumerate(ordered_items(items, "summary")):
         reject_unknown_fields(item, SUMMARY_FIELDS, f"summary[{index}]")
         result = markdown_text(item.get("result"), f"summary[{index}].result")
@@ -122,20 +148,25 @@ def render_summary(items):
         decision = optional_text(item, "decision", f"summary[{index}]")
         parts = [result]
         if impact:
-            parts.append(f"影响：{markdown_text(impact, 'summary impact')}")
+            parts.append(
+                f"{labels['impact']}：{markdown_text(impact, 'summary impact')}"
+            )
         if decision:
-            parts.append(f"决策：{markdown_text(decision, 'summary decision')}")
+            parts.append(
+                f"{labels['decision']}：{markdown_text(decision, 'summary decision')}"
+            )
         link = source_link(
             item.get("source_ref"),
             f"summary[{index}].source_ref",
             "工作来源",
         )
-        lines.append(f"- {sentence(parts)}{link}")
-    return lines or ["- 无"]
+        contents.append(f"{sentence(parts)}{link}")
+    return format_items(contents, style)
 
 
-def render_workstreams(items):
-    lines = []
+def render_workstreams(items, style="bullet", labels=None, layout="inline"):
+    contents = []
+    labels = labels or resolved_field_labels(None)
     for index, item in enumerate(ordered_items(items, "workstreams")):
         reject_unknown_fields(
             item,
@@ -155,24 +186,41 @@ def render_workstreams(items):
         progress = optional_text(item, "progress", f"workstreams[{index}]")
         parts = [result]
         if impact:
-            parts.append(f"影响：{markdown_text(impact, 'workstream impact')}")
+            parts.append(
+                f"{labels['impact']}：{markdown_text(impact, 'workstream impact')}"
+            )
         if decision:
-            parts.append(f"决策：{markdown_text(decision, 'workstream decision')}")
+            parts.append(
+                f"{labels['decision']}："
+                f"{markdown_text(decision, 'workstream decision')}"
+            )
         if progress:
-            parts.append(f"进展：{markdown_text(progress, 'workstream progress')}")
+            parts.append(
+                f"{labels['progress']}："
+                f"{markdown_text(progress, 'workstream progress')}"
+            )
         link = source_link(
             item.get("source_ref"),
             f"workstreams[{index}].source_ref",
             "工作来源",
         )
-        lines.append(
-            f"- **{name}｜{STATUS_LABELS[status]}**：{sentence(parts)}{link}"
-        )
-    return lines or ["- 无"]
+        heading = f"{name}｜{STATUS_LABELS[status]}"
+        if layout == "inline":
+            contents.append(f"**{heading}**：{sentence(parts)}{link}")
+        else:
+            body = format_items([f"{sentence(parts)}{link}"], style)
+            if contents:
+                contents.append("")
+            contents.append(f"### {heading}")
+            contents.extend(body)
+    if layout == "subsection":
+        return contents or ["- 无"]
+    return format_items(contents, style)
 
 
-def render_risks(items):
-    lines = []
+def render_risks(items, style="bullet", labels=None):
+    contents = []
+    labels = labels or resolved_field_labels(None)
     for index, item in enumerate(ordered_items(items, "risks")):
         reject_unknown_fields(item, RISK_FIELDS, f"risks[{index}]")
         risk = markdown_text(item.get("risk"), f"risks[{index}].risk")
@@ -180,20 +228,26 @@ def render_risks(items):
         assistance = optional_text(item, "assistance", f"risks[{index}]")
         parts = [risk]
         if impact:
-            parts.append(f"影响：{markdown_text(impact, 'risk impact')}")
+            parts.append(
+                f"{labels['impact']}：{markdown_text(impact, 'risk impact')}"
+            )
         if assistance:
-            parts.append(f"需协助：{markdown_text(assistance, 'risk assistance')}")
+            parts.append(
+                f"{labels['assistance']}："
+                f"{markdown_text(assistance, 'risk assistance')}"
+            )
         link = source_link(
             item.get("source_ref"),
             f"risks[{index}].source_ref",
             "工作来源",
         )
-        lines.append(f"- {sentence(parts)}{link}")
-    return lines or ["- 无"]
+        contents.append(f"{sentence(parts)}{link}")
+    return format_items(contents, style)
 
 
-def render_next_actions(items):
-    lines = []
+def render_next_actions(items, style="bullet", labels=None):
+    contents = []
+    labels = labels or resolved_field_labels(None)
     for index, item in enumerate(ordered_items(items, "next_actions")):
         reject_unknown_fields(
             item,
@@ -204,13 +258,17 @@ def render_next_actions(items):
         purpose = optional_text(item, "purpose", f"next_actions[{index}]")
         parts = [action]
         if purpose:
-            parts.append(f"目标：{markdown_text(purpose, 'next action purpose')}")
-        lines.append(f"- {sentence(parts)}")
-    return lines or ["- 无"]
+            parts.append(
+                f"{labels['purpose']}："
+                f"{markdown_text(purpose, 'next action purpose')}"
+            )
+        contents.append(sentence(parts))
+    return format_items(contents, style)
 
 
-def render_uncertain(items):
-    lines = []
+def render_uncertain(items, style="bullet", labels=None):
+    contents = []
+    labels = labels or resolved_field_labels(None)
     for index, item in enumerate(ordered_items(items, "uncertain")):
         reject_unknown_fields(item, UNCERTAIN_FIELDS, f"uncertain[{index}]")
         description = markdown_text(
@@ -223,8 +281,8 @@ def render_uncertain(items):
             f"uncertain[{index}].source_ref",
             "待复核来源",
         )
-        lines.append(f"- {description}；原因：{reason}。{link}")
-    return lines or ["- 无"]
+        contents.append(f"{description}；{labels['reason']}：{reason}。{link}")
+    return format_items(contents, style)
 
 
 def parse_time(value, label):
@@ -282,7 +340,7 @@ def render_coverage(value):
     ]
 
 
-def render(payload):
+def render(payload, template=None, context=None):
     payload = require_object(payload, "report model")
     reject_unknown_fields(payload, MODEL_FIELDS, "report model")
     if payload.get("schema_version") != 1:
@@ -290,14 +348,29 @@ def render(payload):
     profile = payload.get("profile")
     if profile not in PROFILE_SECTIONS:
         raise ValueError(f"profile must be one of {', '.join(PROFILE_SECTIONS)}")
-    title = markdown_text(payload.get("title"), "title")
-    sections = PROFILE_SECTIONS[profile]
+    if template is not None:
+        template = validate_template(template)
+    fallback_title = markdown_text(payload.get("title"), "title")
+    title = markdown_text(
+        render_title(template, fallback_title, context),
+        "rendered title",
+    )
+    settings = section_settings(template, profile)
+    sections = [setting["label"] for setting in settings]
+    styles = [setting["item_style"] for setting in settings]
+    labels = resolved_field_labels(template)
+    layout = resolved_workstream_layout(template)
     bodies = (
-        render_summary(payload.get("summary")),
-        render_workstreams(payload.get("workstreams")),
-        render_risks(payload.get("risks")),
-        render_next_actions(payload.get("next_actions")),
-        render_uncertain(payload.get("uncertain")),
+        render_summary(payload.get("summary"), styles[0], labels),
+        render_workstreams(
+            payload.get("workstreams"),
+            styles[1],
+            labels,
+            layout,
+        ),
+        render_risks(payload.get("risks"), styles[2], labels),
+        render_next_actions(payload.get("next_actions"), styles[3], labels),
+        render_uncertain(payload.get("uncertain"), styles[4], labels),
         render_coverage(payload.get("coverage")),
     )
     blocks = [f"# {title}"]
@@ -310,6 +383,8 @@ def build_parser():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--file", required=True, help="Structured report model JSON")
     parser.add_argument("--output", help="Write Markdown to this path instead of stdout")
+    parser.add_argument("--template-file")
+    parser.add_argument("--context-file")
     return parser
 
 
@@ -321,7 +396,13 @@ def main():
         if output_path and source_path.resolve() == output_path.resolve():
             raise ValueError("output path must differ from report model path")
         payload = json.loads(source_path.read_text(encoding="utf-8"))
-        markdown = render(payload)
+        template = load_template(args.template_file) if args.template_file else None
+        context = (
+            json.loads(Path(args.context_file).read_text(encoding="utf-8"))
+            if args.context_file
+            else None
+        )
+        markdown = render(payload, template, context)
         if output_path:
             output_path.write_text(markdown, encoding="utf-8")
         else:

@@ -34,7 +34,10 @@ python3 scripts/validate-adapter.py --file <adapter-manifest.json>
       "max_batch_size": 20
     },
     "report.create": {"available": true},
-    "report.fetch": {"available": true}
+    "report.fetch": {"available": true},
+    "template.fetch": {"available": true},
+    "template.upsert": {"available": true},
+    "template.delete": {"available": true}
   }
 }
 ```
@@ -90,6 +93,16 @@ source://<adapter_id>/<source_type>/<stable_id>
 
 创建操作返回文档稳定 ID 和 URL；回读操作按此 ID 返回标题与正文。创建而不能回读不构成可靠交付，因此校验器会报错。两者同时可用时 `delivery_mode=document`，否则为 `markdown`。
 
+### `template.fetch`、`template.upsert` 与 `template.delete`
+
+三个操作按当前主体稳定 ID 和固定 `template_id=default` 管理一份个人模板档案：
+
+- `template.fetch` 返回规范化的 `template-profile.json` 与存储版本；不存在时返回明确的 not-found，不创建空模板。
+- `template.upsert` 原子新增或替换档案。写入成功后必须再次 `template.fetch`，确认回读内容与规范化档案一致。
+- `template.delete` 删除默认模板。删除后必须再次 `template.fetch`，确认模板不存在。
+
+`template.upsert` 与 `template.delete` 必须同时可用，并依赖 `template.fetch` 完成验收。只提供 `template.fetch` 时为 `template_mode=read_only`；三者齐全时为 `read_write`。模板档案契约见 [template-profiles.md](template-profiles.md)。
+
 ## 安全降级
 
 | 校验结果 | 允许行为 |
@@ -116,5 +129,7 @@ source://<adapter_id>/<source_type>/<stable_id>
 - 重试计入预算。
 - 本地脚本和对已返回结果的本地分析不计。
 - 一次请求返回多个域仍计 1 次，但分别记录覆盖域。
+- 持久模板启用时，每次报告最多增加 1 次 `template.fetch`，并单独增加 1 次硬上限，不减少采集预算。
+- 保存模板通常为“读取样例 + upsert + fetch 验收”2–3 次；重置为 delete + fetch 验收 2 次。
 
 单次调用可用 `manage-run.py record-call` 记账；批量或并行波次在执行前用 `record-batch` 一次原子预留全部调用。硬上限拒绝后停止扩散。

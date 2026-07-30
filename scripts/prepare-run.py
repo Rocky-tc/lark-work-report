@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from runtime_utils import load_script, write_json_atomic
+from template_profiles import load as load_template
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -74,6 +75,10 @@ def compact_adapter(adapter):
         "metadata_parallelism",
         "fetch_operation",
         "fetch_batch_size",
+        "template_mode",
+        "template_fetch_operation",
+        "template_upsert_operation",
+        "template_delete_operation",
     )
     return {field: adapter[field] for field in fields}
 
@@ -157,6 +162,26 @@ def run_profile(period, depth, monthly_cache):
     return "monthly_cached" if monthly_cache == "present" else "monthly_uncached"
 
 
+def template_call(adapters, mode, template_file):
+    if template_file or mode == "none":
+        return None
+    adapter = next(
+        (
+            item
+            for item in adapters
+            if item["template_fetch_operation"] == "template.fetch"
+        ),
+        None,
+    )
+    if adapter is None:
+        return None
+    return {
+        "adapter_id": adapter["adapter_id"],
+        "operation": "template.fetch",
+        "template_id": "default",
+    }
+
+
 def prepare(args):
     period = RESOLVE_PERIOD.resolve(
         period=args.period,
@@ -174,16 +199,30 @@ def prepare(args):
     assignments, unassigned = assign_domains(domains, adapters)
     waves = build_metadata_waves(adapters, assignments, period)
     planned_identity = identity_call(adapters)
+    one_off_template = load_template(args.template_file) if args.template_file else None
+    planned_template = template_call(
+        adapters,
+        args.template_mode,
+        args.template_file,
+    )
     profile = run_profile(period, args.depth, args.monthly_cache)
 
-    created = MANAGE_RUN.create(profile)
+    created = MANAGE_RUN.create(profile, 1 if planned_template else 0)
     run_dir = Path(created["run_dir"])
     plan_file = run_dir / "run-plan.json"
     try:
+        if one_off_template:
+            write_json_atomic(run_dir / "template-profile.json", one_off_template)
         plan = {
             "schema_version": 1,
             "period": period,
             "profile": profile,
+            "template_mode": (
+                "one_off"
+                if one_off_template
+                else ("auto" if args.template_mode == "auto" else "none")
+            ),
+            "template_call": planned_template,
             "requested_domains": domains,
             "unassigned_domains": unassigned,
             "identity_call": planned_identity,
@@ -201,6 +240,11 @@ def prepare(args):
         "routed_profile": period["routed_profile"],
         "run_profile": profile,
         "identity_call_count": 1 if planned_identity else 0,
+        "template_call_count": 1 if planned_template else 0,
+        "template_mode": plan["template_mode"],
+        "template_file": (
+            str(run_dir / "template-profile.json") if one_off_template else None
+        ),
         "metadata_wave_count": len(waves),
         "metadata_call_count": sum(len(wave["calls"]) for wave in waves),
         "unassigned_domains": unassigned,
@@ -231,6 +275,13 @@ def build_parser():
     parser.add_argument(
         "--monthly-cache", choices=("present", "absent"), default="absent"
     )
+    template_group = parser.add_mutually_exclusive_group()
+    template_group.add_argument(
+        "--template-mode",
+        choices=("auto", "none"),
+        default="auto",
+    )
+    template_group.add_argument("--template-file")
     return parser
 
 

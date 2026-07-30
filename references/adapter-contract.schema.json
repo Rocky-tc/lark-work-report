@@ -104,6 +104,24 @@
           "required": ["available"],
           "additionalProperties": false,
           "properties": {"available": {"type": "boolean"}}
+        },
+        "template.fetch": {
+          "type": "object",
+          "required": ["available"],
+          "additionalProperties": false,
+          "properties": {"available": {"type": "boolean"}}
+        },
+        "template.upsert": {
+          "type": "object",
+          "required": ["available"],
+          "additionalProperties": false,
+          "properties": {"available": {"type": "boolean"}}
+        },
+        "template.delete": {
+          "type": "object",
+          "required": ["available"],
+          "additionalProperties": false,
+          "properties": {"available": {"type": "boolean"}}
         }
       }
     }
