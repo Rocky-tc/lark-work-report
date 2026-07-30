@@ -62,6 +62,47 @@ def model(profile="weekly"):
     }
 
 
+def model_v2(profile="weekly"):
+    payload = model(profile)
+    payload["schema_version"] = 2
+    payload["summary"][0].pop("source_ref")
+    payload["summary"][0]["source_refs"] = [
+        "https://example.com/secondary",
+        "https://example.com/secondary-comment",
+    ]
+    payload["summary"][0]["priority_basis"] = "有明确影响、多来源印证"
+    payload["workstreams"][0]["source_refs"] = [
+        "source://host.lark/docs/doc-1",
+        "source://host.lark/comments/comment-1",
+    ]
+    payload["next_actions"][0].update(
+        {
+            "action_kind": "reply",
+            "due_at": "2026-07-27T12:00:00+08:00",
+            "requires_response": True,
+            "assignee_relation": "self",
+            "priority_basis": "需要回复、两天内到期",
+            "source_refs": ["source://host.lark/comments/comment-1"],
+        }
+    )
+    return payload
+
+
+def model_v3(profile="weekly"):
+    payload = model_v2(profile)
+    payload["schema_version"] = 3
+    for section in (
+        "summary",
+        "workstreams",
+        "risks",
+        "next_actions",
+        "uncertain",
+    ):
+        for index, item in enumerate(payload[section]):
+            item["evidence_ids"] = [f"sha256:{section}-{index}"]
+    return payload
+
+
 def run_renderer(payload, output=False):
     tmp = tempfile.TemporaryDirectory()
     source = Path(tmp.name) / "model.json"
@@ -155,6 +196,130 @@ class RenderReportTests(unittest.TestCase):
                 result.stdout.index("完成关键结果"),
                 result.stdout.index("完成次要结果"),
             )
+        finally:
+            tmp.cleanup()
+
+    def test_v2_renders_action_context_and_multiple_sources(self):
+        tmp, result, report = run_renderer(model_v2(), output=True)
+        try:
+            self.assertEqual(result.returncode, 0, result.stderr)
+            markdown = report.read_text(encoding="utf-8")
+            self.assertIn("行动类型：回复", markdown)
+            self.assertIn("截止时间：2026-07-27T12:00:00+08:00", markdown)
+            self.assertIn("需要回复：是", markdown)
+            self.assertIn("责任关系：当前主体", markdown)
+            self.assertIn("排序依据：需要回复、两天内到期", markdown)
+            self.assertIn(
+                "[工作来源](https://example.com/secondary-comment)",
+                markdown,
+            )
+            ledger_file = Path(tmp.name) / "ledger.json"
+            ledger_file.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 2,
+                        "work": [
+                            {"source_ref": "https://example.com/primary"},
+                            {
+                                "source_ref": "https://example.com/secondary",
+                                "source_refs": [
+                                    "https://example.com/secondary",
+                                    "https://example.com/secondary-comment",
+                                ],
+                            },
+                            {
+                                "source_ref": "source://host.lark/docs/doc-1",
+                                "source_refs": [
+                                    "source://host.lark/docs/doc-1",
+                                    "source://host.lark/comments/comment-1",
+                                ],
+                            },
+                        ],
+                        "uncertain": [],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            validation = subprocess.run(
+                [
+                    sys.executable,
+                    str(VALIDATOR),
+                    "--profile",
+                    "weekly",
+                    "--file",
+                    str(report),
+                    "--ledger-file",
+                    str(ledger_file),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(
+                validation.returncode,
+                0,
+                validation.stdout + validation.stderr,
+            )
+        finally:
+            tmp.cleanup()
+
+    def test_v2_factual_action_requires_a_source(self):
+        payload = model_v2()
+        payload["next_actions"][0].pop("source_refs")
+        tmp, result, _ = run_renderer(payload)
+        try:
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(
+                "requires source_ref or source_refs",
+                result.stderr,
+            )
+        finally:
+            tmp.cleanup()
+
+    def test_v3_evidence_ids_do_not_change_rendered_report(self):
+        v2_tmp, v2_result, _ = run_renderer(model_v2())
+        v3_tmp, v3_result, _ = run_renderer(model_v3())
+        try:
+            self.assertEqual(v2_result.returncode, 0, v2_result.stderr)
+            self.assertEqual(v3_result.returncode, 0, v3_result.stderr)
+            self.assertEqual(v3_result.stdout, v2_result.stdout)
+        finally:
+            v2_tmp.cleanup()
+            v3_tmp.cleanup()
+
+    def test_v3_requires_evidence_ids_for_every_report_item(self):
+        payload = model_v3()
+        payload["summary"][0].pop("evidence_ids")
+        tmp, result, _ = run_renderer(payload)
+        try:
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(
+                "summary[0].evidence_ids must be a non-empty string array",
+                result.stderr,
+            )
+        finally:
+            tmp.cleanup()
+
+    def test_v1_next_action_output_remains_unchanged(self):
+        tmp, result, _ = run_renderer(model())
+        try:
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("- 执行真实周报验证；目标：验证阅读体验。", result.stdout)
+            self.assertNotIn("行动类型", result.stdout)
+            self.assertNotIn("截止时间", result.stdout)
+        finally:
+            tmp.cleanup()
+
+    def test_v1_cannot_smuggle_v2_fields_through_normalization(self):
+        payload = model()
+        payload["summary"][0]["source_refs"] = [
+            "https://example.com/secondary-comment"
+        ]
+        tmp, result, _ = run_renderer(payload)
+        try:
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("unknown fields: source_refs", result.stderr)
         finally:
             tmp.cleanup()
 

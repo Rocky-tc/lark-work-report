@@ -132,6 +132,155 @@ class FinalizeRunTests(unittest.TestCase):
         self.assertFalse((self.run_dir / "report.md").exists())
         self.assertIn("不在 work 账本", result.stdout)
 
+    def test_v2_multi_source_action_report_is_finalized(self):
+        model = report_model()
+        model["schema_version"] = 2
+        model["summary"][0] = {
+            "result": "完成报告优化",
+            "source_refs": [
+                "https://example.com/work/1",
+                "https://example.com/comment/1",
+            ],
+        }
+        model["next_actions"] = [
+            {
+                "action": "回复评审意见",
+                "action_kind": "reply",
+                "due_at": "2026-07-28T12:00:00+08:00",
+                "requires_response": True,
+                "assignee_relation": "self",
+                "source_ref": "https://example.com/comment/1",
+            }
+        ]
+        (self.run_dir / "report-model.json").write_text(
+            json.dumps(model, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        (self.run_dir / "ledger.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "work": [
+                        {
+                            "source_ref": "https://example.com/work/1",
+                            "source_refs": [
+                                "https://example.com/work/1",
+                                "https://example.com/comment/1",
+                            ],
+                        }
+                    ],
+                    "uncertain": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        result = run(FINALIZER, "--run-dir", str(self.run_dir))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        markdown = (self.run_dir / "report.md").read_text(encoding="utf-8")
+        self.assertIn("行动类型：回复", markdown)
+        self.assertIn("需要回复：是", markdown)
+        self.assertIn(
+            "[工作来源](https://example.com/comment/1)",
+            markdown,
+        )
+
+    def test_v3_requires_and_accepts_complete_ledger_coverage(self):
+        model = report_model()
+        model["schema_version"] = 3
+        model["summary"][0]["evidence_ids"] = ["cluster-work-1"]
+        ledger = {
+            "schema_version": 2,
+            "work": [
+                {
+                    "cluster_id": "cluster-work-1",
+                    "source_ref": "https://example.com/work/1",
+                }
+            ],
+            "uncertain": [],
+        }
+        (self.run_dir / "report-model.json").write_text(
+            json.dumps(model, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        (self.run_dir / "ledger.json").write_text(
+            json.dumps(ledger, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        result = run(FINALIZER, "--run-dir", str(self.run_dir))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_v3_fails_when_any_ledger_cluster_is_omitted(self):
+        model = report_model()
+        model["schema_version"] = 3
+        model["summary"][0]["evidence_ids"] = ["cluster-work-1"]
+        model["coverage"]["work_count"] = 2
+        ledger = {
+            "schema_version": 2,
+            "work": [
+                {
+                    "cluster_id": "cluster-work-1",
+                    "source_ref": "https://example.com/work/1",
+                },
+                {
+                    "cluster_id": "cluster-work-2",
+                    "source_ref": "https://example.com/work/2",
+                },
+            ],
+            "uncertain": [],
+        }
+        (self.run_dir / "report-model.json").write_text(
+            json.dumps(model, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        (self.run_dir / "ledger.json").write_text(
+            json.dumps(ledger, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        result = run(FINALIZER, "--run-dir", str(self.run_dir))
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("cluster-work-2", result.stdout)
+        self.assertFalse((self.run_dir / "report.md").exists())
+
+    def test_v3_rejects_cross_ledger_evidence_reference(self):
+        model = report_model()
+        model["schema_version"] = 3
+        model["summary"][0]["evidence_ids"] = ["cluster-uncertain-1"]
+        ledger = {
+            "schema_version": 2,
+            "work": [
+                {
+                    "cluster_id": "cluster-work-1",
+                    "source_ref": "https://example.com/work/1",
+                }
+            ],
+            "uncertain": [
+                {
+                    "cluster_id": "cluster-uncertain-1",
+                    "source_ref": "https://example.com/uncertain/1",
+                }
+            ],
+        }
+        model["coverage"]["uncertain_count"] = 1
+        model["uncertain"] = [
+            {
+                "description": "事项归属待确认",
+                "reason": "上下文不足",
+                "source_ref": "https://example.com/uncertain/1",
+                "evidence_ids": ["cluster-uncertain-1"],
+            }
+        ]
+        (self.run_dir / "report-model.json").write_text(
+            json.dumps(model, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        (self.run_dir / "ledger.json").write_text(
+            json.dumps(ledger, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        result = run(FINALIZER, "--run-dir", str(self.run_dir))
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("错误账本类型", result.stdout)
+
     def test_output_outside_run_is_rejected(self):
         result = run(
             FINALIZER,

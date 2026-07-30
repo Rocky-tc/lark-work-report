@@ -5,12 +5,12 @@ import argparse
 import json
 import re
 import sys
-from datetime import datetime
 from pathlib import Path
 
 from contracts import PROFILE_SECTIONS
 from source_refs import SOURCE_TARGET, is_valid_source_ref
 from template_profiles import field_labels, load as load_template, section_settings
+from value_contracts import parse_aware_datetime as parse_time_contract
 
 
 WORK_SOURCE_LINK = re.compile(rf"\[工作来源\]\(({SOURCE_TARGET})\)")
@@ -45,12 +45,9 @@ def split_sections(markdown):
 
 def parse_aware_datetime(value, label, errors):
     try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        _, parsed = parse_time_contract(value, label)
     except ValueError:
         errors.append(f"{label}不是有效的 ISO 8601 时间：{value}")
-        return None
-    if parsed.tzinfo is None or parsed.utcoffset() is None:
-        errors.append(f"{label}必须包含时区偏移：{value}")
         return None
     return parsed
 
@@ -99,15 +96,29 @@ def validate_ledger(ledger, coverage_counts, errors):
             if not isinstance(item, dict):
                 errors.append(f"证据账本 {name}[{index}] 必须是对象")
                 continue
+            item_refs = []
             source_ref = item.get("source_ref")
-            if not isinstance(source_ref, str) or not source_ref.strip():
-                errors.append(f"证据账本 {name}[{index}] 缺少 source_ref")
-            elif not is_valid_source_ref(source_ref):
-                errors.append(f"证据账本 {name}[{index}] 的 source_ref 无效")
-            elif source_ref in refs[name]:
-                errors.append(f"证据账本 {name} 存在重复 source_ref：{source_ref}")
-            else:
-                refs[name].add(source_ref)
+            if source_ref is not None:
+                item_refs.append(source_ref)
+            source_refs = item.get("source_refs", [])
+            if not isinstance(source_refs, list):
+                errors.append(f"证据账本 {name}[{index}].source_refs 必须是数组")
+                source_refs = []
+            item_refs.extend(source_refs)
+            item_refs = list(dict.fromkeys(item_refs))
+            if not item_refs:
+                errors.append(
+                    f"证据账本 {name}[{index}] 缺少 source_ref/source_refs"
+                )
+            for source in item_refs:
+                if not isinstance(source, str) or not source.strip():
+                    errors.append(f"证据账本 {name}[{index}] 包含空来源")
+                elif not is_valid_source_ref(source):
+                    errors.append(f"证据账本 {name}[{index}] 的来源无效")
+                elif source in refs[name]:
+                    errors.append(f"证据账本 {name} 存在重复 source_ref：{source}")
+                else:
+                    refs[name].add(source)
     if coverage_counts:
         for name in ("work", "uncertain"):
             items = ledger.get(name)
@@ -120,6 +131,95 @@ def validate_ledger(ledger, coverage_counts, errors):
     for source_ref in sorted(overlap):
         errors.append(f"同一 source_ref 不能同时属于 work 和 uncertain：{source_ref}")
     return refs
+
+
+def validate_model_coverage(model, ledger):
+    errors = []
+    if not isinstance(model, dict) or model.get("schema_version") != 3:
+        return {"ok": True, "errors": []}
+    if not isinstance(ledger, dict) or ledger.get("schema_version") != 2:
+        return {
+            "ok": False,
+            "errors": ["报告模型 v3 要求证据账本 schema_version=2"],
+        }
+
+    ledger_ids = {"work": set(), "uncertain": set()}
+    for name in ("work", "uncertain"):
+        items = ledger.get(name)
+        if not isinstance(items, list):
+            errors.append(f"证据账本缺少数组：{name}")
+            continue
+        for index, item in enumerate(items):
+            if not isinstance(item, dict):
+                errors.append(f"证据账本 {name}[{index}] 必须是对象")
+                continue
+            cluster_id = item.get("cluster_id")
+            if not isinstance(cluster_id, str) or not cluster_id.strip():
+                errors.append(f"证据账本 {name}[{index}] 缺少 cluster_id")
+                continue
+            cluster_id = cluster_id.strip()
+            if cluster_id in ledger_ids["work"] | ledger_ids["uncertain"]:
+                errors.append(f"证据账本存在重复 cluster_id：{cluster_id}")
+            ledger_ids[name].add(cluster_id)
+
+    report_ids = {"work": set(), "uncertain": set()}
+    section_kinds = {
+        "summary": "work",
+        "workstreams": "work",
+        "risks": "work",
+        "next_actions": "work",
+        "uncertain": "uncertain",
+    }
+    for section, kind in section_kinds.items():
+        items = model.get(section)
+        if not isinstance(items, list):
+            errors.append(f"报告模型缺少数组：{section}")
+            continue
+        for index, item in enumerate(items):
+            if not isinstance(item, dict):
+                errors.append(f"报告模型 {section}[{index}] 必须是对象")
+                continue
+            evidence_ids = item.get("evidence_ids")
+            if (
+                not isinstance(evidence_ids, list)
+                or not evidence_ids
+                or not all(
+                    isinstance(value, str) and value.strip()
+                    for value in evidence_ids
+                )
+            ):
+                errors.append(
+                    f"报告模型 {section}[{index}] 缺少有效 evidence_ids"
+                )
+                continue
+            normalized = [value.strip() for value in evidence_ids]
+            if len(normalized) != len(set(normalized)):
+                errors.append(
+                    f"报告模型 {section}[{index}].evidence_ids 存在重复值"
+                )
+            for evidence_id in normalized:
+                if evidence_id not in ledger_ids[kind]:
+                    other = "uncertain" if kind == "work" else "work"
+                    if evidence_id in ledger_ids[other]:
+                        errors.append(
+                            f"报告模型 {section}[{index}] 引用了错误账本类型："
+                            f"{evidence_id}"
+                        )
+                    else:
+                        errors.append(
+                            f"报告模型 {section}[{index}] 引用了未知证据："
+                            f"{evidence_id}"
+                        )
+                else:
+                    report_ids[kind].add(evidence_id)
+
+    for kind in ("work", "uncertain"):
+        missing = sorted(ledger_ids[kind] - report_ids[kind])
+        if missing:
+            errors.append(
+                f"报告模型未覆盖 {kind} 账本条目：" + "、".join(missing)
+            )
+    return {"ok": not errors, "errors": errors}
 
 
 def validate(markdown, profile, ledger, template=None):
@@ -207,6 +307,7 @@ def build_parser():
     parser.add_argument("--file", required=True)
     parser.add_argument("--ledger-file", required=True)
     parser.add_argument("--template-file")
+    parser.add_argument("--model-file")
     return parser
 
 
@@ -216,6 +317,11 @@ def main():
         markdown = Path(args.file).read_text(encoding="utf-8")
         ledger = json.loads(Path(args.ledger_file).read_text(encoding="utf-8"))
         template = load_template(args.template_file) if args.template_file else None
+        model = (
+            json.loads(Path(args.model_file).read_text(encoding="utf-8"))
+            if args.model_file
+            else None
+        )
     except (OSError, json.JSONDecodeError) as exc:
         print(json.dumps({"error": str(exc)}, ensure_ascii=False), file=sys.stderr)
         return 2
@@ -223,6 +329,10 @@ def main():
         print(json.dumps({"error": str(exc)}, ensure_ascii=False), file=sys.stderr)
         return 2
     result = validate(markdown, args.profile, ledger, template)
+    if model is not None:
+        model_result = validate_model_coverage(model, ledger)
+        result["errors"].extend(model_result["errors"])
+        result["ok"] = not result["errors"]
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0 if result["ok"] else 1
 

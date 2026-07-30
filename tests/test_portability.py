@@ -1,3 +1,5 @@
+import importlib.util
+import json
 from pathlib import Path
 import re
 import unittest
@@ -5,6 +7,14 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 CORE_FILES = [ROOT / "SKILL.md", *sorted((ROOT / "references").glob("*.md"))]
+
+
+def load_contracts():
+    path = ROOT / "scripts" / "contracts.py"
+    spec = importlib.util.spec_from_file_location("lark_work_report_contracts", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 class PortabilityTests(unittest.TestCase):
@@ -46,6 +56,17 @@ class PortabilityTests(unittest.TestCase):
             "report.fetch",
         ):
             self.assertIn(operation, text)
+
+    def test_adapter_schema_source_types_match_runtime_contract(self):
+        schema = json.loads(
+            (ROOT / "references" / "adapter-contract.schema.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        declared = schema["properties"]["capabilities"]["properties"][
+            "candidate.list"
+        ]["properties"]["domains"]["items"]["enum"]
+        self.assertEqual(set(declared), set(load_contracts().SOURCE_TYPES))
 
     def test_readme_uses_one_generic_install_flow(self):
         text = (ROOT / "README.md").read_text(encoding="utf-8")

@@ -2,6 +2,7 @@
 
 import importlib.util
 import json
+import sys
 from pathlib import Path
 
 
@@ -39,3 +40,10 @@ def write_text_atomic(path, value):
     pending = path.with_name(f".{path.name}.next")
     pending.write_text(value, encoding="utf-8")
     pending.replace(path)
+
+
+def emit_json(payload, stream=None):
+    print(
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+        file=stream or sys.stdout,
+    )

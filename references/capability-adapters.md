@@ -22,13 +22,22 @@ python3 scripts/validate-adapter.py --file <adapter-manifest.json>
       "metadata_only": true,
       "parallel_safe": true,
       "max_parallelism": 4,
-      "domains": ["calendar", "im", "docs", "tasks"]
+      "domains": ["calendar", "im", "docs", "tasks"],
+      "domain_coverage": {
+        "im": ["im", "mentions"],
+        "docs": ["docs", "comments"]
+      }
     },
     "candidate.list_many": {
       "available": true,
       "max_domains": 4
     },
-    "candidate.fetch": {"available": true},
+    "candidate.fetch": {
+      "available": true,
+      "file_output": true,
+      "parallel_safe": true,
+      "max_parallelism": 4
+    },
     "candidate.fetch_many": {
       "available": true,
       "max_batch_size": 20
@@ -44,7 +53,9 @@ python3 scripts/validate-adapter.py --file <adapter-manifest.json>
 
 `adapter_id` 在本次运行中必须稳定。规范来源类型只有：
 
-`calendar`、`im`、`docs`、`wiki`、`base`、`tasks`、`minutes`、`vc`、`mail`、`okr`、`approval`、`report_cache`。
+`calendar`、`im`、`mentions`、`docs`、`comments`、`wiki`、`base`、`tasks`、`minutes`、`vc`、`mail`、`okr`、`approval`、`report_cache`、`code_activity`、`ai_sessions`。
+
+`code_activity` 与 `ai_sessions` 是可选来源，不得成为飞书客户使用本 Skill 的前置条件。
 
 ## 能力语义
 
@@ -67,7 +78,9 @@ python3 scripts/validate-adapter.py --file <adapter-manifest.json>
 - `prefetch_relevance`；
 - `classification_reason`。
 
-可选元数据为 `title`、`container`、`participants`、`workstream_hint`、`priority`、`cursor`。候选不得包含 `body`、`content`、`raw_content`、`transcript`、`message_text`、`full_text` 或等价正文。
+可选元数据为 `title`、`container`、`participants`、`workstream_hint`、`priority`、`cursor`、`starts_at`、`ends_at`、`due_at`、`requires_response`、`action_kind`、`assignee_relation`。时间必须带时区；行动类型和责任关系使用 [evidence-model.md](evidence-model.md) 的枚举。候选不得包含 `body`、`content`、`raw_content`、`transcript`、`message_text`、`full_text` 或等价正文。
+
+`domains` 表示适配器真正需要调用的查询域，`domain_coverage` 可声明一次查询返回的证据类型。键必须属于 `domains`，值必须包含键自身。例如 `im → [im, mentions]` 表示查询消息时已同时覆盖 @ 提及，规划器不会再单独查询 `mentions`。未声明时按一对一覆盖处理。
 
 `metadata_only=true` 表示广泛列举不会读取正文。只有同时具备元数据列举和独立正文读取时，校验器才返回 `collection_mode=broad`。
 
@@ -79,11 +92,15 @@ python3 scripts/validate-adapter.py --file <adapter-manifest.json>
 
 ### `candidate.fetch`
 
-只按已经通过队列过滤器的稳定 ID 读取必要正文和上下文。结果必须同时返回可核验来源标识。无稳定链接时使用：
+只按已经通过队列过滤器的稳定 ID 读取完整正文和上下文。长材料可以完整分块，但不得用摘要、搜索片段或截断结果替代正文核验。结果必须同时返回可核验来源标识。无稳定链接时使用：
 
 ```text
 source://<adapter_id>/<source_type>/<stable_id>
 ```
+
+`file_output=true` 表示适配器能把完整结果直接写入抓取批次指定的受管 `body_file`；否则宿主必须在调用后立即原样写入该文件，不能把正文留在对话或终端摘要中。`parallel_safe=true` 与 `max_parallelism` 表示不同抓取批次可按受控波次并行；未明确声明时必须串行。
+
+正文核验结果按 [evidence-model.md](evidence-model.md) 转换为逐项提取结果。新增来源只需新增适配器映射，不得修改归并器或报告渲染逻辑。
 
 ### `candidate.fetch_many`
 

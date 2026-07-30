@@ -5,7 +5,7 @@ description: Use when 用户要通过任意可用的飞书连接器、MCP、CLI 
 
 # 飞书个人日周月报
 
-用同一套采集、分类和证据引擎生成日报、周报、月报或自定义周期总结。周期只改变时间窗、聚合粒度、比较基线、预算和章节名称。
+用同一套采集、分类、跨源归并和证据引擎生成日报、周报、月报或自定义周期总结。周期只改变时间窗、聚合粒度、比较基线、预算和章节名称。
 
 ## 边界与默认值
 
@@ -21,6 +21,8 @@ description: Use when 用户要通过任意可用的飞书连接器、MCP、CLI 
 
 ## 执行
 
+执行正文分类前必须完整读取 [relevance-and-retention.md](references/relevance-and-retention.md) 与 [evidence-model.md](references/evidence-model.md)。它们定义工作相关性、隐私边界、证据字段和状态语义，不能为节省 token 省略。其他参考文件按下文条件加载。
+
 1. **准备运行。** 把可用适配器 manifest 写入 `{"adapters":[...]}`，执行：
 
    ```bash
@@ -33,7 +35,7 @@ description: Use when 用户要通过任意可用的飞书连接器、MCP、CLI 
 
    自定义周期增加 `--start`、`--end`；可重复传 `--domain`。月报已有可靠周报缓存时传 `--monthly-cache present`；深度模式传 `--depth deep`；仅本次使用模板时传 `--template-file`。保存返回的 `run_dir` 和 `plan_file`。
 
-2. **确认身份、模板并列举元数据。** 读取 `run-plan.json`。`identity_call` 存在时，先执行一次 `record-call`，取得主体与时区并写入 `<run-dir>/identity.json`；离线模式把用户提供的主体写入同一文件。`template_call` 存在时，再预留并执行一次 `template.fetch`；命中后把已校验档案写入 `<run-dir>/template-profile.json`，未命中则使用内置格式。再逐个执行 `metadata_waves`：每波先用一次 `record-batch` 原子预留全部外部调用，同一波并行、不同波顺序执行。`candidate.list_many` 一次请求多个域；`candidate.list` 一次请求一个域。候选只含元数据，写入 `<run-dir>/candidates.json`。
+2. **确认身份、模板并列举元数据。** 读取 `run-plan.json`。按计划执行 `identity_call` 和可选 `template_call`，分别写入 `identity.json` 与经过校验的 `template-profile.json`。执行每个 `metadata_wave` 前用 `record-batch` 原子预留调用；同波并行、跨波顺序执行。规划器已经按收益与适配器覆盖关系消除重复查询。候选只含元数据，写入 `<run-dir>/candidates.json`。
 
 3. **过滤、去重并抓正文。**
 
@@ -44,9 +46,15 @@ description: Use when 用户要通过任意可用的飞书连接器、MCP、CLI 
      --output <run-dir>/fetch-queue.json
    ```
 
-   命令按精确 `source_ref` 跨域去重并生成 `fetch_batches`，终端只返回路径、工作/待复核数量、去重数和批次数。分类冲突直接停止。执行抓取批次前同样用 `record-batch` 预留，只读取确认工作归属所需的上下文。
+   命令按精确 `source_ref` 跨域去重，生成带文件落点的 `fetch_batches` 和受适配器并发上限约束的 `fetch_waves`。执行每个波次前用 `record-batch` 原子预留；只在适配器明确声明安全时并行。每个入队候选必须完整读取正文；长材料可完整分块处理，但不得只看摘要或片段。适配器支持文件输出时直接写入批次指定的 `body_file`，否则立即把完整返回写入该文件，终端只保留路径和计数。
 
-4. **建账本和报告模型。** 正文核验后把私人或闲聊立即丢弃。写入仅含 `work`、`uncertain` 的 `<run-dir>/ledger.json`，以及 `<run-dir>/report-model.json`。工作结论只能引用 `work`；待复核只能引用 `uncertain`。
+4. **核验完整性、归并证据并建立报告模型。** 对每个批次的完整正文做一次语义提取，把逐项结果写入指定 `evidence_file`：工作或待复核带证据记录；正文确认的私人/闲聊只写丢弃结果；无权限写访问缺口。然后执行：
+
+   ```bash
+   python3 scripts/compile-evidence.py --run-dir <run-dir>
+   ```
+
+   编译器要求抓取队列中的每个候选恰好有一个结果；缺失、重复、身份不匹配或非法字段都会停止，验证通过后才生成 `evidence-records.json`、`ledger.json` 和不含私人/闲聊详情的 `extraction-audit.json`。归并器在两个账本内完成谨慎聚类、状态裁决、多来源保留和重要性排序。再完整读取账本建立报告模型 v3：每个报告条目用 `evidence_ids` 指向账本聚合项，且每个工作与待复核聚合项都必须被报告模型覆盖。
 
 5. **一次定稿。**
 
@@ -66,6 +74,7 @@ description: Use when 用户要通过任意可用的飞书连接器、MCP、CLI 
 
 - 固定六段语义：摘要、进展与结果、风险、下一周期重点、待复核、来源与覆盖；有效模板可改变标题、显示名称、分组、列表/段落、字段标签和文风。
 - 条目按 `priority` 排序；同一条按结果、影响、决策、进展排序；空章节只写 `- 无`。
+- 报告模型 v3 继承多来源、排序依据、行动类型、截止时间、待回复状态和责任关系，并强制声明 `evidence_ids`；这些字段只能来自对应账本。
 - 关键事实、数字、状态、结果和决策必须有来源锚。
 - 报告只出现 `work` 与 `uncertain`；证据不足时输出短报告和覆盖缺口，不虚构。
 
@@ -78,14 +87,12 @@ description: Use when 用户要通过任意可用的飞书连接器、MCP、CLI 
 
 ## 按需参考
 
-仅在命中条件时完整读取；常规运行不预加载：
+除上述两份必读语义契约外，仅在命中条件时完整读取：
 
 | 条件 | 文件 |
 |---|---|
 | manifest 缺失、校验失败或新增宿主 | [capability-adapters.md](references/capability-adapters.md) |
 | 深度模式、分页、预算、缓存或覆盖取舍 | [collection-policy.md](references/collection-policy.md) |
-| 分类有歧义或用户要求持久化 | [relevance-and-retention.md](references/relevance-and-retention.md) |
-| 来源冲突、聚合、去重或归因困难 | [evidence-model.md](references/evidence-model.md) |
 | 用户改变格式、比较口径或周期粒度 | [report-profiles.md](references/report-profiles.md) |
 | 用户提供旧报告/模板、改变或重置个人格式 | [template-profiles.md](references/template-profiles.md) |
 | 报告模型被定稿器拒绝 | [report-rendering.md](references/report-rendering.md) |
@@ -93,7 +100,7 @@ description: Use when 用户要通过任意可用的飞书连接器、MCP、CLI 
 
 ## 停止与禁止
 
-- 预算拒绝下一波时停止；同一域连续两轮无新增证据时停止该域。
+- 预算拒绝下一波时停止并披露未覆盖项；不得把减少域、缩短时间窗或跳过已入队正文作为性能优化。
 - `explicit_only` 只读点名对象；`offline_only` 只处理导出材料。
 - 不发送报告，不修改现有对象、权限或全局身份配置。
 - 不把临时证据写到运行目录外，不持久化私人或闲聊，不默认生成关系图、妙搭页面或本地报告缓存。

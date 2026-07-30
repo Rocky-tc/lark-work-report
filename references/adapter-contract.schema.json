@@ -45,7 +45,9 @@
                 "enum": [
                   "calendar",
                   "im",
+                  "mentions",
                   "docs",
+                  "comments",
                   "wiki",
                   "base",
                   "tasks",
@@ -54,10 +56,41 @@
                   "mail",
                   "okr",
                   "approval",
-                  "report_cache"
+                  "report_cache",
+                  "code_activity",
+                  "ai_sessions"
                 ]
               },
               "uniqueItems": true
+            },
+            "domain_coverage": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "calendar",
+                    "im",
+                    "mentions",
+                    "docs",
+                    "comments",
+                    "wiki",
+                    "base",
+                    "tasks",
+                    "minutes",
+                    "vc",
+                    "mail",
+                    "okr",
+                    "approval",
+                    "report_cache",
+                    "code_activity",
+                    "ai_sessions"
+                  ]
+                },
+                "minItems": 1,
+                "uniqueItems": true
+              }
             }
           }
         },
@@ -70,7 +103,7 @@
             "max_domains": {
               "type": "integer",
               "minimum": 2,
-              "maximum": 12
+              "maximum": 16
             }
           }
         },
@@ -78,7 +111,16 @@
           "type": "object",
           "required": ["available"],
           "additionalProperties": false,
-          "properties": {"available": {"type": "boolean"}}
+          "properties": {
+            "available": {"type": "boolean"},
+            "file_output": {"type": "boolean"},
+            "parallel_safe": {"type": "boolean"},
+            "max_parallelism": {
+              "type": "integer",
+              "minimum": 2,
+              "maximum": 16
+            }
+          }
         },
         "candidate.fetch_many": {
           "type": "object",

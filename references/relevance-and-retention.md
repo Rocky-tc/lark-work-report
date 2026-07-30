@@ -67,6 +67,7 @@
 - `persistent_scope=work_only`：只保存 `work`。
 - `persistent_scope=work_and_uncertain`：保存 `work` 和 `uncertain`，是持久化模式默认范围。
 - `private` 与 `chatter` 永远不持久化。
+- 跨源聚合事项只有在全部组成记录都获准持久化时才标记为 `persistent`；混合保留状态一律按 `ephemeral` 处理。
 - 不自动上传飞书、发布妙搭、共享给他人或作为团队缓存。
 
 无论采用哪种保留模式，工作章节只读取 `work`；“待复核”章节只读取 `uncertain`。

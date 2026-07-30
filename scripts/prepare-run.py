@@ -6,7 +6,8 @@ import json
 import sys
 from pathlib import Path
 
-from runtime_utils import load_script, write_json_atomic
+from contracts import SOURCE_PRIORITY
+from runtime_utils import emit_json, load_script, write_json_atomic
 from template_profiles import load as load_template
 
 
@@ -70,11 +71,14 @@ def compact_adapter(adapter):
         "collection_mode",
         "delivery_mode",
         "domains",
+        "domain_coverage",
         "list_operation",
         "list_batch_size",
         "metadata_parallelism",
         "fetch_operation",
         "fetch_batch_size",
+        "fetch_file_output",
+        "fetch_parallelism",
         "template_mode",
         "template_fetch_operation",
         "template_upsert_operation",
@@ -89,12 +93,14 @@ def requested_domains(values, adapters):
         for value in values:
             domains.extend(item.strip() for item in value.split(",") if item.strip())
     else:
-        domains = [
-            domain
+        available = {
+            covered
             for adapter in adapters
             if adapter["collection_mode"] == "broad"
-            for domain in adapter["domains"]
-        ]
+            for query_domain in adapter["domains"]
+            for covered in adapter["domain_coverage"][query_domain]
+        }
+        domains = [domain for domain in SOURCE_PRIORITY if domain in available]
     unknown = set(domains) - VALIDATE_ADAPTER.SOURCE_TYPES
     if unknown:
         raise ValueError(f"unknown requested domains: {', '.join(sorted(unknown))}")
@@ -103,51 +109,147 @@ def requested_domains(values, adapters):
 
 def assign_domains(domains, adapters):
     assignments = {adapter["adapter_id"]: [] for adapter in adapters}
+    coverage = {adapter["adapter_id"]: {} for adapter in adapters}
+    remaining = set(domains)
     unassigned = []
-    for domain in domains:
-        owner = next(
-            (
-                adapter
-                for adapter in adapters
-                if adapter["collection_mode"] == "broad"
-                and domain in adapter["domains"]
-            ),
-            None,
+    while remaining:
+        target = next(domain for domain in domains if domain in remaining)
+        options = []
+        for adapter_index, adapter in enumerate(adapters):
+            if adapter["collection_mode"] != "broad":
+                continue
+            for query_index, query_domain in enumerate(adapter["domains"]):
+                covered = set(adapter["domain_coverage"][query_domain])
+                if target not in covered:
+                    continue
+                gain = covered & remaining
+                options.append(
+                    (
+                        -len(gain),
+                        query_domain != target,
+                        adapter_index,
+                        query_index,
+                        adapter,
+                        query_domain,
+                        gain,
+                    )
+                )
+        if not options:
+            unassigned.append(target)
+            remaining.remove(target)
+            continue
+        _, _, _, _, adapter, query_domain, gain = min(
+            options,
+            key=lambda item: item[:4],
         )
-        if owner is None:
-            unassigned.append(domain)
-        else:
-            assignments[owner["adapter_id"]].append(domain)
-    return assignments, unassigned
+        adapter_id = adapter["adapter_id"]
+        assignments[adapter_id].append(query_domain)
+        covered_in_order = [domain for domain in domains if domain in gain]
+        coverage[adapter_id][query_domain] = covered_in_order
+        remaining -= gain
+    return assignments, coverage, unassigned
 
 
-def metadata_call(adapter, domains, period):
+def metadata_call(adapter, domains, covered_domains, period):
     return {
         "adapter_id": adapter["adapter_id"],
         "operation": adapter["list_operation"],
         "domains": domains,
+        "covered_domains": covered_domains,
         "start": period["start"],
         "end": period["end"],
     }
 
 
-def build_metadata_waves(adapters, assignments, period):
-    waves = []
+def build_metadata_waves(
+    adapters,
+    assignments,
+    coverage,
+    period,
+    domain_order=None,
+):
+    ranked_waves = []
+    domain_order = domain_order or [
+        domain
+        for adapter in adapters
+        for domain in assignments[adapter["adapter_id"]]
+    ]
+    domain_rank = {
+        domain: index for index, domain in enumerate(domain_order)
+    }
     for adapter in adapters:
         domains = assignments[adapter["adapter_id"]]
         if not domains:
             continue
+        adapter_coverage = coverage[adapter["adapter_id"]]
         strategy = adapter["metadata_strategy"]
         if strategy == "batch":
             groups = chunks(domains, adapter["list_batch_size"])
-            waves.extend([[metadata_call(adapter, group, period)] for group in groups])
-        elif strategy == "parallel":
-            calls = [metadata_call(adapter, [domain], period) for domain in domains]
-            waves.extend(chunks(calls, adapter["metadata_parallelism"]))
-        elif strategy == "serial":
-            waves.extend(
-                [[metadata_call(adapter, [domain], period)] for domain in domains]
+            ranked_waves.extend(
+                (
+                    min(
+                        domain_rank[covered]
+                        for domain in group
+                        for covered in adapter_coverage[domain]
+                    ),
+                    [
+                        metadata_call(
+                            adapter,
+                            group,
+                            [
+                                domain
+                                for domain in domain_order
+                                if any(
+                                    domain in adapter_coverage[query_domain]
+                                    for query_domain in group
+                                )
+                            ],
+                            period,
+                        )
+                    ],
+                )
+                for group in groups
             )
+        elif strategy == "parallel":
+            calls = [
+                metadata_call(
+                    adapter,
+                    [domain],
+                    adapter_coverage[domain],
+                    period,
+                )
+                for domain in domains
+            ]
+            for group in chunks(calls, adapter["metadata_parallelism"]):
+                ranked_waves.append(
+                    (
+                        min(
+                            domain_rank[covered]
+                            for call in group
+                            for covered in call["covered_domains"]
+                        ),
+                        group,
+                    )
+                )
+        elif strategy == "serial":
+            ranked_waves.extend(
+                (
+                    min(
+                        domain_rank[covered]
+                        for covered in adapter_coverage[domain]
+                    ),
+                    [
+                        metadata_call(
+                            adapter,
+                            [domain],
+                            adapter_coverage[domain],
+                            period,
+                        )
+                    ],
+                )
+                for domain in domains
+            )
+    waves = [calls for _, calls in sorted(ranked_waves, key=lambda item: item[0])]
     return [
         {"wave": index, "parallel": len(calls) > 1, "calls": calls}
         for index, calls in enumerate(waves, start=1)
@@ -196,8 +298,14 @@ def prepare(args):
     )
     adapters = validate_adapters(load_adapters(args.adapters_file))
     domains = requested_domains(args.domain, adapters)
-    assignments, unassigned = assign_domains(domains, adapters)
-    waves = build_metadata_waves(adapters, assignments, period)
+    assignments, coverage, unassigned = assign_domains(domains, adapters)
+    waves = build_metadata_waves(
+        adapters,
+        assignments,
+        coverage,
+        period,
+        domains,
+    )
     planned_identity = identity_call(adapters)
     one_off_template = load_template(args.template_file) if args.template_file else None
     planned_template = template_call(
@@ -292,7 +400,7 @@ def main():
     except (OSError, ValueError) as exc:
         print(json.dumps({"error": str(exc)}, ensure_ascii=False), file=sys.stderr)
         return 2
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    emit_json(result)
     return 0
 
 

@@ -55,6 +55,60 @@ class ValidateAdapterTests(unittest.TestCase):
         self.assertEqual(payload["fetch_strategy"], "serial")
         self.assertEqual(payload["template_mode"], "none")
 
+    def test_new_optional_work_sources_are_valid_domains(self):
+        payload = manifest()
+        payload["capabilities"]["candidate.list"]["domains"] = [
+            "mentions",
+            "comments",
+            "code_activity",
+            "ai_sessions",
+        ]
+        result = run_validator(payload)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(
+            json.loads(result.stdout)["domains"],
+            ["mentions", "comments", "code_activity", "ai_sessions"],
+        )
+
+    def test_domain_coverage_declares_one_query_for_related_source_types(self):
+        payload = manifest()
+        payload["capabilities"]["candidate.list"].update(
+            {
+                "domains": ["im", "docs"],
+                "domain_coverage": {
+                    "im": ["im", "mentions"],
+                    "docs": ["docs", "comments"],
+                },
+            }
+        )
+        result = run_validator(payload)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(
+            json.loads(result.stdout)["domain_coverage"],
+            {
+                "im": ["im", "mentions"],
+                "docs": ["docs", "comments"],
+            },
+        )
+
+    def test_domain_coverage_rejects_unknown_query_or_source_type(self):
+        for coverage in (
+            {"messages": ["im"]},
+            {"im": ["im", "not-a-source"]},
+            {"im": ["mentions"]},
+        ):
+            with self.subTest(coverage=coverage):
+                payload = manifest()
+                payload["capabilities"]["candidate.list"]["domain_coverage"] = coverage
+                result = run_validator(payload)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertTrue(
+                    any(
+                        "candidate.list.domain_coverage" in error
+                        for error in json.loads(result.stdout)["errors"]
+                    )
+                )
+
     def test_template_storage_requires_verified_read_write_set(self):
         result = run_validator(manifest(template=True))
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -134,6 +188,41 @@ class ValidateAdapterTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn(
             "candidate.list.max_parallelism requires parallel_safe=true",
+            json.loads(result.stdout)["errors"],
+        )
+
+    def test_file_backed_bounded_fetch_is_declared(self):
+        payload = manifest()
+        payload["capabilities"]["candidate.fetch"].update(
+            {
+                "file_output": True,
+                "parallel_safe": True,
+                "max_parallelism": 3,
+            }
+        )
+        result = run_validator(payload)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        validated = json.loads(result.stdout)
+        self.assertTrue(validated["fetch_file_output"])
+        self.assertEqual(validated["fetch_parallelism"], 3)
+
+    def test_fetch_parallelism_requires_explicit_parallel_safety(self):
+        payload = manifest()
+        payload["capabilities"]["candidate.fetch"]["max_parallelism"] = 3
+        result = run_validator(payload)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "candidate.fetch.max_parallelism requires parallel_safe=true",
+            json.loads(result.stdout)["errors"],
+        )
+
+    def test_fetch_file_output_must_be_boolean(self):
+        payload = manifest()
+        payload["capabilities"]["candidate.fetch"]["file_output"] = "yes"
+        result = run_validator(payload)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "candidate.fetch.file_output must be boolean",
             json.loads(result.stdout)["errors"],
         )
 

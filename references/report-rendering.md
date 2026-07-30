@@ -23,35 +23,50 @@
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 3,
   "profile": "weekly",
   "title": "张三个人周报｜2026-07-20 至 2026-07-26",
   "summary": [
     {
       "priority": 1,
+      "evidence_ids": ["sha256:summary-cluster"],
       "result": "完成报告 Skill 的通用化升级",
       "impact": "任意兼容宿主都可按统一契约调用",
-      "source_ref": "https://example.com/summary"
+      "priority_basis": "有明确影响、多来源印证",
+      "source_refs": [
+        "https://example.com/summary",
+        "https://example.com/comment"
+      ]
     }
   ],
   "workstreams": [
     {
       "priority": 1,
+      "evidence_ids": ["sha256:workstream-cluster"],
       "name": "报告 Skill",
       "status": "completed",
       "result": "形成六段式报告输出",
       "impact": "减少重复章节",
       "decision": "使用结构化模型统一渲染",
       "progress": "渲染器和校验器已通过测试",
-      "source_ref": "source://host.lark/docs/doc-1"
+      "source_refs": [
+        "source://host.lark/docs/doc-1",
+        "source://host.lark/comments/comment-1"
+      ]
     }
   ],
   "risks": [],
   "next_actions": [
     {
       "priority": 1,
+      "evidence_ids": ["sha256:action-cluster"],
       "action": "使用真实周报做可读性验证",
-      "purpose": "确认重要信息能在第一屏被识别"
+      "purpose": "确认重要信息能在第一屏被识别",
+      "action_kind": "review",
+      "due_at": "2026-07-28T18:00:00+08:00",
+      "assignee_relation": "self",
+      "priority_basis": "当前主体责任明确、两天内到期",
+      "source_refs": ["source://host.lark/comments/comment-1"]
     }
   ],
   "uncertain": [],
@@ -69,16 +84,18 @@
 
 ## 字段规则
 
-- `schema_version`：固定为 `1`。渲染器拒绝缺失或未知版本。
+- `schema_version=1` 和 `2` 仅用于兼容旧模型；新建报告使用 `3`。v3 保持 v2 的显示结果，但要求每个非空报告条目提供一个或多个唯一 `evidence_ids`。
+- `evidence_ids` 必须引用完整账本中同类型聚合项的 `cluster_id`。摘要、进展、风险和下一周期只能引用 `work`；待复核只能引用 `uncertain`。定稿器要求工作与待复核账本中的每个聚合项至少被引用一次。
 - 报告模型和各层对象采用严格字段白名单；字段拼写错误或未知字段直接报错，不静默忽略。
 - `priority`：非负整数，数值越小越靠前；相同值保持输入顺序。不设置时按 `100` 处理。
+- v2 可选 `priority_basis`，只写最重要的可解释依据，不展示内部数值分数。
 - `summary[].result`：先写已经产生的结果；可选 `impact`、`decision` 按结果、影响、决策的顺序输出。
-- `workstreams[]`：必填 `name`、`status`、`result`、`source_ref`；可选 `impact`、`decision`、`progress`。渲染顺序固定为结果、影响、决策、进展。
+- `workstreams[]`：必填 `name`、`status`、`result` 和至少一个来源；可选 `impact`、`decision`、`progress`。渲染顺序固定为结果、影响、决策、进展、排序依据。
 - `status`：仅允许 `completed`、`in_progress`、`blocked`、`planned`。
-- `risks[]`：必填 `risk`、`source_ref`；可选 `impact`、`assistance`。
-- `next_actions[]`：必填 `action`；可选 `purpose`，不强制来源。
-- `uncertain[]`：必填 `description`、`reason`、`source_ref`。
-- `source_ref`：只允许不会破坏 Markdown 链接的 `http://`、`https://` 或 `source://`；括号必须进行 URL 编码。
+- `risks[]`：必填 `risk` 和至少一个来源；可选 `impact`、`assistance`。
+- `next_actions[]`：必填 `action`；可选 `purpose`。v2 还允许 `action_kind`、`starts_at`、`ends_at`、`due_at`、`requires_response`、`assignee_relation` 和 `priority_basis`；出现这些事实字段时必须提供工作来源。
+- `uncertain[]`：必填 `description`、`reason` 和至少一个待复核来源。
+- v1 使用 `source_ref`；v2 可使用 `source_ref` 或 `source_refs`，并为聚合事项输出全部可核验来源。来源只允许不会破坏 Markdown 链接的 `http://`、`https://` 或 `source://`。
 - 空数组渲染为单行 `- 无`，不补充解释性套话。
 
 ## 命令

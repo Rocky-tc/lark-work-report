@@ -149,7 +149,7 @@ class PrepareRunTests(unittest.TestCase):
             self.assertEqual(summary["metadata_wave_count"], 2)
             self.assertEqual(
                 [call["domains"] for wave in plan["metadata_waves"] for call in wave["calls"]],
-                [["docs", "im"], ["tasks"]],
+                [["tasks", "docs"], ["im"]],
             )
             self.assertTrue(
                 all(
@@ -173,6 +173,95 @@ class PrepareRunTests(unittest.TestCase):
             self.assertEqual([len(wave["calls"]) for wave in plan["metadata_waves"]], [2, 1])
             self.assertTrue(plan["metadata_waves"][0]["parallel"])
             self.assertFalse(plan["metadata_waves"][1]["parallel"])
+        finally:
+            if "run_dir" in locals():
+                cleanup(run_dir)
+            tmp.cleanup()
+
+    def test_default_domains_follow_evidence_yield_priority(self):
+        payload = adapter_manifest(batch=True)
+        payload["capabilities"]["candidate.list"]["domains"] = [
+            "ai_sessions",
+            "docs",
+            "mentions",
+            "calendar",
+            "tasks",
+        ]
+        tmp, result = run_prepare(payload)
+        try:
+            self.assertEqual(result.returncode, 0, result.stderr)
+            summary = json.loads(result.stdout)
+            run_dir = summary["run_dir"]
+            plan = json.loads(Path(summary["plan_file"]).read_text(encoding="utf-8"))
+            self.assertEqual(
+                plan["requested_domains"],
+                ["tasks", "calendar", "mentions", "docs", "ai_sessions"],
+            )
+            self.assertEqual(
+                [
+                    domain
+                    for wave in plan["metadata_waves"]
+                    for call in wave["calls"]
+                    for domain in call["domains"]
+                ],
+                ["tasks", "calendar", "mentions", "docs", "ai_sessions"],
+            )
+        finally:
+            if "run_dir" in locals():
+                cleanup(run_dir)
+            tmp.cleanup()
+
+    def test_domain_coverage_avoids_redundant_metadata_queries(self):
+        payload = adapter_manifest(batch=True)
+        payload["capabilities"]["candidate.list"].update(
+            {
+                "domains": ["im", "docs"],
+                "domain_coverage": {
+                    "im": ["im", "mentions"],
+                    "docs": ["docs", "comments"],
+                },
+            }
+        )
+        tmp, result = run_prepare(payload)
+        try:
+            self.assertEqual(result.returncode, 0, result.stderr)
+            summary = json.loads(result.stdout)
+            run_dir = summary["run_dir"]
+            plan = json.loads(Path(summary["plan_file"]).read_text(encoding="utf-8"))
+            self.assertEqual(
+                plan["requested_domains"],
+                ["mentions", "comments", "docs", "im"],
+            )
+            self.assertEqual(summary["metadata_call_count"], 1)
+            call = plan["metadata_waves"][0]["calls"][0]
+            self.assertEqual(call["domains"], ["im", "docs"])
+            self.assertEqual(
+                call["covered_domains"],
+                ["mentions", "comments", "docs", "im"],
+            )
+            self.assertEqual(plan["unassigned_domains"], [])
+        finally:
+            if "run_dir" in locals():
+                cleanup(run_dir)
+            tmp.cleanup()
+
+    def test_explicit_related_domain_can_use_covering_query(self):
+        payload = adapter_manifest()
+        payload["capabilities"]["candidate.list"].update(
+            {
+                "domains": ["im"],
+                "domain_coverage": {"im": ["im", "mentions"]},
+            }
+        )
+        tmp, result = run_prepare(payload, "--domain", "mentions")
+        try:
+            self.assertEqual(result.returncode, 0, result.stderr)
+            summary = json.loads(result.stdout)
+            run_dir = summary["run_dir"]
+            plan = json.loads(Path(summary["plan_file"]).read_text(encoding="utf-8"))
+            call = plan["metadata_waves"][0]["calls"][0]
+            self.assertEqual(call["domains"], ["im"])
+            self.assertEqual(call["covered_domains"], ["mentions"])
         finally:
             if "run_dir" in locals():
                 cleanup(run_dir)

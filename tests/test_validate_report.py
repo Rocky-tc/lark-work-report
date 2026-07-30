@@ -341,6 +341,30 @@ class ValidateReportTests(unittest.TestCase):
             json.loads(result.stdout)["errors"],
         )
 
+    def test_v2_ledger_source_refs_are_valid_evidence_anchors(self):
+        additional = "https://example.com/additional"
+        report = VALID_WEEKLY.replace(
+            "[工作来源](https://example.com/workstream)",
+            "[工作来源](https://example.com/workstream)"
+            f"[工作来源]({additional})",
+        )
+        ledger = {
+            "schema_version": 2,
+            "work": [
+                {"source_ref": "https://example.com/overview"},
+                {
+                    "source_ref": "https://example.com/workstream",
+                    "source_refs": [
+                        "https://example.com/workstream",
+                        additional,
+                    ],
+                },
+            ],
+            "uncertain": DEFAULT_LEDGER["uncertain"],
+        }
+        result = run_validator(report, ledger=ledger)
+        self.assertEqual(result.returncode, 0, result.stdout)
+
     def test_positive_count_requires_a_matching_anchor(self):
         report = VALID_WEEKLY.replace(
             "- 新方案探索可能属于本周工作；原因：工作流归属尚不明确。"

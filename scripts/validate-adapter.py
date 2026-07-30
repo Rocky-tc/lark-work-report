@@ -61,6 +61,7 @@ def validate(payload):
     template_deleted = capability(capabilities, "template.delete")
 
     domains = []
+    domain_coverage = {}
     list_parallelism = 1
     if listed.get("available"):
         metadata_only = listed.get("metadata_only")
@@ -77,6 +78,47 @@ def validate(payload):
             errors.append("candidate.list.domains must not contain duplicates")
         else:
             domains = declared_domains
+
+        declared_coverage = listed.get("domain_coverage", {})
+        if not isinstance(declared_coverage, dict):
+            errors.append("candidate.list.domain_coverage must be an object")
+            declared_coverage = {}
+        unknown_queries = set(declared_coverage) - set(domains)
+        if unknown_queries:
+            errors.append(
+                "candidate.list.domain_coverage contains an undeclared query domain"
+            )
+        for domain in domains:
+            covered = declared_coverage.get(domain, [domain])
+            if (
+                not isinstance(covered, list)
+                or not covered
+                or not all(isinstance(item, str) and item for item in covered)
+            ):
+                errors.append(
+                    f"candidate.list.domain_coverage.{domain} "
+                    "must be a non-empty string array"
+                )
+                continue
+            if len(set(covered)) != len(covered):
+                errors.append(
+                    f"candidate.list.domain_coverage.{domain} "
+                    "must not contain duplicates"
+                )
+                continue
+            if not set(covered).issubset(SOURCE_TYPES):
+                errors.append(
+                    f"candidate.list.domain_coverage.{domain} "
+                    "contains an unknown source type"
+                )
+                continue
+            if domain not in covered:
+                errors.append(
+                    f"candidate.list.domain_coverage.{domain} "
+                    "must include its query domain"
+                )
+                continue
+            domain_coverage[domain] = covered
 
         parallel_safe = listed.get("parallel_safe", False)
         if not isinstance(parallel_safe, bool):
@@ -120,6 +162,34 @@ def validate(payload):
         )
 
     fetch_batch_size = 1
+    fetch_file_output = False
+    fetch_parallelism = 1
+    if fetched.get("available"):
+        fetch_file_output = fetched.get("file_output", False)
+        if not isinstance(fetch_file_output, bool):
+            errors.append("candidate.fetch.file_output must be boolean")
+            fetch_file_output = False
+        fetch_parallel_safe = fetched.get("parallel_safe", False)
+        if not isinstance(fetch_parallel_safe, bool):
+            errors.append("candidate.fetch.parallel_safe must be boolean")
+            fetch_parallel_safe = False
+        if fetch_parallel_safe:
+            fetch_parallelism = (
+                bounded_integer(
+                    fetched.get("max_parallelism"),
+                    "candidate.fetch.max_parallelism",
+                    2,
+                    16,
+                    errors,
+                    required=True,
+                )
+                or 1
+            )
+        elif "max_parallelism" in fetched:
+            errors.append(
+                "candidate.fetch.max_parallelism requires parallel_safe=true"
+            )
+
     if fetched_many.get("available"):
         if not fetched.get("available"):
             errors.append("candidate.fetch_many requires candidate.fetch")
@@ -225,6 +295,7 @@ def validate(payload):
             "template.delete" if template_deleted.get("available") else None
         ),
         "domains": domains,
+        "domain_coverage": domain_coverage,
         "metadata_strategy": metadata_strategy,
         "list_operation": list_operation,
         "list_batch_size": list_batch_size,
@@ -232,6 +303,8 @@ def validate(payload):
         "fetch_strategy": fetch_strategy,
         "fetch_operation": fetch_operation,
         "fetch_batch_size": fetch_batch_size,
+        "fetch_file_output": fetch_file_output,
+        "fetch_parallelism": fetch_parallelism,
         "errors": errors,
         "warnings": warnings,
     }

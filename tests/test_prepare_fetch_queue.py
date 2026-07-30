@@ -61,13 +61,21 @@ def run_plan(*adapters):
     return {"adapters": list(adapters)}
 
 
-def adapter(adapter_id, batch_size=1):
+def adapter(
+    adapter_id,
+    batch_size=1,
+    *,
+    parallelism=1,
+    file_output=False,
+):
     return {
         "adapter_id": adapter_id,
         "fetch_operation": (
             "candidate.fetch_many" if batch_size > 1 else "candidate.fetch"
         ),
         "fetch_batch_size": batch_size,
+        "fetch_parallelism": parallelism,
+        "fetch_file_output": file_output,
     }
 
 
@@ -134,6 +142,69 @@ class PrepareFetchQueueTests(unittest.TestCase):
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("invalid source_type", json.loads(result.stderr)["error"])
+
+    def test_new_work_signal_source_types_are_supported(self):
+        result, queue = run_filter(
+            [
+                candidate("mention", "work", source_type="mentions"),
+                candidate("comment", "work", source_type="comments"),
+                candidate("code", "work", source_type="code_activity"),
+                candidate("ai", "work", source_type="ai_sessions"),
+            ]
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            {item["source_type"] for item in queue["fetch_queue"]},
+            {"mentions", "comments", "code_activity", "ai_sessions"},
+        )
+
+    def test_action_metadata_is_preserved_without_body_content(self):
+        result, queue = run_filter(
+            [
+                candidate(
+                    "reply",
+                    "work",
+                    source_type="mentions",
+                    due_at="2026-07-27T12:00:00+08:00",
+                    requires_response=True,
+                    action_kind="reply",
+                    assignee_relation="self",
+                )
+            ]
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        item = queue["fetch_queue"][0]
+        self.assertTrue(item["requires_response"])
+        self.assertEqual(item["action_kind"], "reply")
+        self.assertEqual(item["assignee_relation"], "self")
+
+    def test_invalid_action_metadata_is_rejected(self):
+        result, _ = run_filter(
+            [
+                candidate(
+                    "reply",
+                    "work",
+                    due_at="2026-07-27T12:00:00",
+                    action_kind="respond_somehow",
+                )
+            ]
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("timezone offset", json.loads(result.stderr)["error"])
+
+    def test_queue_uses_source_priority_when_candidate_priority_is_equal(self):
+        result, queue = run_filter(
+            [
+                candidate("ai", "work", source_type="ai_sessions"),
+                candidate("task", "work", source_type="tasks"),
+                candidate("comment", "work", source_type="comments"),
+            ]
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            [item["source_type"] for item in queue["fetch_queue"]],
+            ["tasks", "comments", "ai_sessions"],
+        )
 
     def test_source_ref_vocabulary_is_enforced(self):
         result, _ = run_filter([candidate("X", "work", source_ref="doc_X")])
@@ -210,6 +281,41 @@ class PrepareFetchQueueTests(unittest.TestCase):
             [len(batch["items"]) for batch in queue["fetch_batches"]],
             [2, 2, 1],
         )
+
+    def test_fetch_batches_use_managed_files_and_stable_global_ids(self):
+        result, queue = run_filter(
+            [candidate("A", "work"), candidate("B", "work")],
+            run_plan(adapter("test.adapter", 2, file_output=True)),
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        batch = queue["fetch_batches"][0]
+        self.assertEqual(batch["batch_id"], "fetch-0001")
+        self.assertEqual(
+            batch["body_file"],
+            "fetch-results/fetch-0001.json",
+        )
+        self.assertEqual(
+            batch["evidence_file"],
+            "evidence-parts/fetch-0001.json",
+        )
+        self.assertTrue(batch["file_output"])
+        self.assertEqual(
+            [item["global_id"] for item in batch["items"]],
+            ["test.adapter:docs:A", "test.adapter:docs:B"],
+        )
+
+    def test_fetch_waves_respect_adapter_parallelism(self):
+        result, queue = run_filter(
+            [candidate(str(index), "work") for index in range(5)],
+            run_plan(adapter("test.adapter", 1, parallelism=2)),
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            [len(wave["batch_ids"]) for wave in queue["fetch_waves"]],
+            [2, 2, 1],
+        )
+        self.assertTrue(queue["fetch_waves"][0]["parallel"])
+        self.assertFalse(queue["fetch_waves"][-1]["parallel"])
 
     def test_excluded_duplicates_do_not_affect_reported_dedup_count(self):
         shared = "source://host/docs/private"

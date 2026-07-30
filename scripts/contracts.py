@@ -1,20 +1,41 @@
 """Shared machine contracts for collection and report scripts."""
 
 
-SOURCE_TYPES = {
+SOURCE_PRIORITY = (
+    "report_cache",
+    "tasks",
     "calendar",
-    "im",
+    "vc",
+    "minutes",
+    "mentions",
+    "comments",
     "docs",
     "wiki",
     "base",
-    "tasks",
-    "minutes",
-    "vc",
+    "im",
     "mail",
     "okr",
     "approval",
-    "report_cache",
+    "code_activity",
+    "ai_sessions",
+)
+SOURCE_TYPES = frozenset(SOURCE_PRIORITY)
+SOURCE_RANK = {
+    source_type: index for index, source_type in enumerate(SOURCE_PRIORITY)
 }
+
+SIGNAL_KINDS = {"outcome", "action", "decision", "risk", "event"}
+ACTION_KINDS = {
+    "reply",
+    "prepare",
+    "review",
+    "deliver",
+    "follow_up",
+    "attend",
+}
+ASSIGNEE_RELATIONS = {"self", "shared", "unknown"}
+STATUS_BASES = {"explicit", "stated_plan", "inferred"}
+EVIDENCE_CONFIDENCE = {"high", "medium", "low"}
 
 PROFILE_SECTIONS = {
     "daily": (

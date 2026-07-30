@@ -43,6 +43,18 @@ class BuildPackageTests(unittest.TestCase):
                 "lark-work-report/scripts/template_profiles.py",
                 names,
             )
+            self.assertIn(
+                "lark-work-report/scripts/reconcile-evidence.py",
+                names,
+            )
+            self.assertIn(
+                "lark-work-report/scripts/compile-evidence.py",
+                names,
+            )
+            self.assertIn(
+                "lark-work-report/scripts/value_contracts.py",
+                names,
+            )
             self.assertFalse(any("/tests/" in name for name in names))
             self.assertFalse(any(name.endswith("README.md") for name in names))
 

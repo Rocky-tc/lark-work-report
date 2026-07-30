@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 from contracts import PROFILE_PERIOD_LABELS
-from runtime_utils import load_script, read_json, write_text_atomic
+from runtime_utils import emit_json, load_script, read_json, write_text_atomic
 from template_profiles import load as load_template
 
 
@@ -117,6 +117,9 @@ def finalize(
         )
     markdown = RENDER_REPORT.render(model, template, context)
     validation = VALIDATE_REPORT.validate(markdown, profile, ledger, template)
+    model_validation = VALIDATE_REPORT.validate_model_coverage(model, ledger)
+    validation["errors"].extend(model_validation["errors"])
+    validation["ok"] = not validation["errors"]
     if not validation["ok"]:
         return {
             "ok": False,
@@ -159,7 +162,7 @@ def main():
     except (OSError, ValueError) as exc:
         print(json.dumps({"error": str(exc)}, ensure_ascii=False), file=sys.stderr)
         return 2
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    emit_json(result)
     return 0 if result["ok"] else 1
 
 
