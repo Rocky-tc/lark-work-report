@@ -4,7 +4,7 @@ import hashlib
 import json
 import re
 
-from contracts import PROFILE_PERIOD_LABELS, SOURCE_RANK
+from contracts import PROFILE_PERIOD_LABELS, SOURCE_RANK, STATUS_LABELS
 from value_contracts import require_text
 
 
@@ -46,6 +46,13 @@ V5_FIELDS = {
     section: (fields - {"evidence_ids"}) | {"evidence_refs"}
     for section, fields in V4_FIELDS.items()
 }
+REQUIRED_NARRATIVE_FIELDS = {
+    "summary": ("result",),
+    "workstreams": ("name", "status", "result"),
+    "risks": ("risk",),
+    "next_actions": ("action",),
+    "uncertain": ("description", "reason"),
+}
 EVIDENCE_REF = re.compile(r"^([wu])([0-9]+)$")
 SOURCE_LABELS = {
     "report_cache": "历史报告",
@@ -65,6 +72,89 @@ SOURCE_LABELS = {
     "code_activity": "代码活动",
     "ai_sessions": "AI会话",
 }
+
+
+def has_text(item, field):
+    value = item.get(field)
+    return isinstance(value, str) and bool(value.strip())
+
+
+def direct_sections(item, kind):
+    """Return report sections that can safely reuse one ledger item verbatim."""
+    if not isinstance(item, dict) or item.get("status_conflict") is not False:
+        return []
+    record_ids = item.get("record_ids")
+    source_refs = item.get("source_refs")
+    if (
+        not isinstance(record_ids, list)
+        or len(record_ids) != 1
+        or not isinstance(source_refs, list)
+        or len(source_refs) != 1
+    ):
+        return []
+    if kind == "uncertain":
+        if (
+            (has_text(item, "title") or has_text(item, "activity"))
+            and has_text(item, "classification_reason")
+        ):
+            return ["uncertain"]
+        return []
+    if kind != "work":
+        raise ValueError("direct fill kind must be work or uncertain")
+    result = []
+    if has_text(item, "output"):
+        result.append("summary")
+        if (
+            has_text(item, "workstream")
+            and item.get("status") in STATUS_LABELS
+        ):
+            result.append("workstreams")
+    if has_text(item, "risk"):
+        result.append("risks")
+    if has_text(item, "next_action"):
+        result.append("next_actions")
+    return result
+
+
+def direct_item(section, record):
+    if section == "summary":
+        result = {"result": record["output"]}
+        for field in ("impact", "decision"):
+            if has_text(record, field):
+                result[field] = record[field]
+        return result
+    if section == "workstreams":
+        result = {
+            "name": record["workstream"],
+            "status": record["status"],
+            "result": record["output"],
+        }
+        for field in ("impact", "decision"):
+            if has_text(record, field):
+                result[field] = record[field]
+        if (
+            has_text(record, "activity")
+            and record["activity"] != record["output"]
+        ):
+            result["progress"] = record["activity"]
+        return result
+    if section == "risks":
+        result = {"risk": record["risk"]}
+        if has_text(record, "impact"):
+            result["impact"] = record["impact"]
+        return result
+    if section == "next_actions":
+        return {"action": record["next_action"]}
+    if section == "uncertain":
+        return {
+            "description": (
+                record["title"]
+                if has_text(record, "title")
+                else record["activity"]
+            ),
+            "reason": record["classification_reason"],
+        }
+    raise ValueError(f"unsupported direct fill section: {section}")
 
 
 def canonical_digest(value):
@@ -249,7 +339,15 @@ def deterministic_top_level(plan, identity, audit, ledger):
     }
 
 
-def expand_v5(model, ledger, plan, identity, audit):
+def expand_v5(
+    model,
+    ledger,
+    plan,
+    identity,
+    audit,
+    *,
+    allow_direct_fill=True,
+):
     unknown = sorted(set(model) - V5_MODEL_FIELDS)
     if unknown:
         raise ValueError(
@@ -288,6 +386,7 @@ def expand_v5(model, ledger, plan, identity, audit):
                 )
             evidence_ids = []
             normalized_refs = []
+            selected_records = []
             for ref_index, value in enumerate(refs):
                 value = require_text(
                     value,
@@ -302,6 +401,7 @@ def expand_v5(model, ledger, plan, identity, audit):
                 if item_index >= len(partition):
                     raise ValueError(f"{label} references unknown evidence: {value}")
                 normalized_refs.append(value)
+                selected_records.append(partition[item_index])
                 evidence_ids.append(
                     require_text(
                         partition[item_index].get("cluster_id"),
@@ -313,15 +413,46 @@ def expand_v5(model, ledger, plan, identity, audit):
             result = {
                 key: value for key, value in item.items() if key != "evidence_refs"
             }
+            direct_allowed = (
+                allow_direct_fill
+                and len(selected_records) == 1
+                and section in direct_sections(selected_records[0], kind)
+            )
+            if not result:
+                if not direct_allowed:
+                    raise ValueError(
+                        f"{label} requires model narrative for this evidence"
+                    )
+                result = direct_item(section, selected_records[0])
+            elif direct_allowed:
+                deterministic = direct_item(section, selected_records[0])
+                for field in REQUIRED_NARRATIVE_FIELDS[section]:
+                    if field not in result:
+                        result[field] = deterministic[field]
             result["evidence_ids"] = evidence_ids
             prepared.append(result)
         expanded[section] = prepared
     return expanded
 
 
-def hydrate(model, ledger, plan=None, identity=None, audit=None):
+def hydrate(
+    model,
+    ledger,
+    plan=None,
+    identity=None,
+    audit=None,
+    *,
+    allow_direct_fill=True,
+):
     if isinstance(model, dict) and model.get("schema_version") == 5:
-        model = expand_v5(model, ledger, plan, identity, audit)
+        model = expand_v5(
+            model,
+            ledger,
+            plan,
+            identity,
+            audit,
+            allow_direct_fill=allow_direct_fill,
+        )
     if not isinstance(model, dict) or model.get("schema_version") != 4:
         return model
     index = ledger_index(ledger)

@@ -7,7 +7,9 @@ import sys
 from pathlib import Path
 
 from contracts import SOURCE_PRIORITY
-from runtime_utils import emit_json, load_script, write_json_atomic
+import execution_graph
+from runtime_utils import emit_json, load_script, read_json, write_json_atomic
+import request_context
 from template_profiles import load as load_template
 
 
@@ -314,6 +316,18 @@ def prepare(args):
         args.template_file,
     )
     profile = run_profile(period, args.depth, args.monthly_cache)
+    supplied_request_context = (
+        request_context.normalize(
+            read_json(Path(args.request_file), "request context")
+        )
+        if args.request_file
+        else None
+    )
+    normalized_request_context = (
+        supplied_request_context
+        if supplied_request_context is not None
+        else request_context.fallback(domains)
+    )
 
     created = MANAGE_RUN.create(profile, 1 if planned_template else 0)
     run_dir = Path(created["run_dir"])
@@ -321,6 +335,10 @@ def prepare(args):
     try:
         if one_off_template:
             write_json_atomic(run_dir / "template-profile.json", one_off_template)
+        write_json_atomic(
+            run_dir / "request-context.json",
+            normalized_request_context,
+        )
         plan = {
             "schema_version": 1,
             "period": period,
@@ -336,7 +354,17 @@ def prepare(args):
             "identity_call": planned_identity,
             "adapters": [compact_adapter(adapter) for adapter in adapters],
             "metadata_waves": waves,
+            "request_context": {
+                "file": "request-context.json",
+                "explicit": supplied_request_context is not None,
+                "isolated_semantic_stages": True,
+            },
         }
+        graph_descriptor = execution_graph.write(
+            run_dir,
+            execution_graph.build(plan),
+        )
+        plan["execution_graph"] = graph_descriptor
         write_json_atomic(plan_file, plan)
     except Exception:
         MANAGE_RUN.cleanup(str(run_dir))
@@ -356,12 +384,21 @@ def prepare(args):
         "metadata_wave_count": len(waves),
         "metadata_call_count": sum(len(wave["calls"]) for wave in waves),
         "unassigned_domains": unassigned,
+        "request_context_file": str(run_dir / "request-context.json"),
+        "request_context_explicit": supplied_request_context is not None,
+        "execution_graph_file": str(run_dir / graph_descriptor["file"]),
+        "execution_graph_digest": graph_descriptor["digest"],
+        "execution_graph_id": graph_descriptor["graph_id"],
     }
 
 
 def build_parser():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--adapters-file", required=True)
+    parser.add_argument(
+        "--request-file",
+        help="Strict JSON request context used by fresh extract/synthesize calls",
+    )
     parser.add_argument(
         "--period",
         required=True,

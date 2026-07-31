@@ -28,12 +28,7 @@ VALID_WEEKLY = """\
 ## 待复核
 - 新方案探索可能属于本周工作；原因：工作流归属尚不明确。[待复核来源](https://example.com/uncertain)
 
-## 来源与覆盖
-- 时间窗：2026-07-20T00:00:00+08:00 至 2026-07-26T18:00:00+08:00
-- 快照时间：2026-07-26T18:00:00+08:00
-- 覆盖域：日历、消息、文档、任务、会议
-- 权限缺口：话题群接口未覆盖
-- 分类计数：work=2，uncertain=1
+> 覆盖说明：已覆盖日历、消息、文档、任务、会议；未能访问话题群接口未覆盖。
 """
 
 DEFAULT_LEDGER = {
@@ -47,7 +42,40 @@ DEFAULT_LEDGER = {
 }
 
 
-def run_validator(markdown, profile="weekly", ledger=DEFAULT_LEDGER):
+def coverage_model(
+    *,
+    start="2026-07-20T00:00:00+08:00",
+    end="2026-07-26T18:00:00+08:00",
+    snapshot="2026-07-26T18:00:00+08:00",
+    domains=None,
+    gaps=None,
+    work_count=2,
+    uncertain_count=1,
+):
+    return {
+        "schema_version": 2,
+        "coverage": {
+            "start": start,
+            "end": end,
+            "snapshot": snapshot,
+            "domains": domains
+            if domains is not None
+            else ["日历", "消息", "文档", "任务", "会议"],
+            "access_gaps": gaps
+            if gaps is not None
+            else ["话题群接口未覆盖"],
+            "work_count": work_count,
+            "uncertain_count": uncertain_count,
+        },
+    }
+
+
+def run_validator(
+    markdown,
+    profile="weekly",
+    ledger=DEFAULT_LEDGER,
+    model=None,
+):
     with tempfile.TemporaryDirectory() as tmp:
         report = Path(tmp) / "report.md"
         report.write_text(textwrap.dedent(markdown), encoding="utf-8")
@@ -62,6 +90,10 @@ def run_validator(markdown, profile="weekly", ledger=DEFAULT_LEDGER):
         ledger_file = Path(tmp) / "ledger.json"
         ledger_file.write_text(json.dumps(ledger), encoding="utf-8")
         command.extend(["--ledger-file", str(ledger_file)])
+        if model is not None:
+            model_file = Path(tmp) / "model.json"
+            model_file.write_text(json.dumps(model), encoding="utf-8")
+            command.extend(["--model-file", str(model_file)])
         return subprocess.run(
             command,
             capture_output=True,
@@ -87,6 +119,15 @@ class ValidateReportTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn(
             "缺少必需章节：风险与需协助事项",
+            json.loads(result.stdout)["errors"],
+        )
+
+    def test_independent_coverage_section_fails(self):
+        report = VALID_WEEKLY + "\n## 来源与覆盖\n- 不应再单列。\n"
+        result = run_validator(report)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "不得输出独立“来源与覆盖”章节",
             json.loads(result.stdout)["errors"],
         )
 
@@ -163,8 +204,8 @@ class ValidateReportTests(unittest.TestCase):
 
     def test_four_class_counts_fail(self):
         report = VALID_WEEKLY.replace(
-            "- 分类计数：work=2，uncertain=1",
-            "- 分类计数：work=2，uncertain=1，private=1，chatter=8",
+            "话题群接口未覆盖。",
+            "话题群接口未覆盖；private=1，chatter=8。",
         )
         result = run_validator(report)
         self.assertNotEqual(result.returncode, 0)
@@ -191,9 +232,6 @@ class ValidateReportTests(unittest.TestCase):
             "- 新方案探索可能属于本周工作；原因：工作流归属尚不明确。"
             "[待复核来源](https://example.com/uncertain)",
             "- 无",
-        ).replace(
-            "- 分类计数：work=2，uncertain=1",
-            "- 分类计数：work=2，uncertain=0",
         )
         result = run_validator(
             report,
@@ -253,22 +291,22 @@ class ValidateReportTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout)
 
     def test_invalid_coverage_times_fail(self):
-        report = VALID_WEEKLY.replace(
-            "2026-07-20T00:00:00+08:00 至 2026-07-26T18:00:00+08:00",
-            "x 至 y",
+        result = run_validator(
+            VALID_WEEKLY,
+            model=coverage_model(start="x", end="y"),
         )
-        result = run_validator(report)
         self.assertNotEqual(result.returncode, 0)
         errors = json.loads(result.stdout)["errors"]
         self.assertTrue(any("时间窗起点不是有效" in item for item in errors))
         self.assertTrue(any("时间窗终点不是有效" in item for item in errors))
 
     def test_time_window_cannot_end_after_snapshot(self):
-        report = VALID_WEEKLY.replace(
-            "2026-07-26T18:00:00+08:00\n- 快照时间",
-            "2026-07-27T00:00:00+08:00\n- 快照时间",
+        result = run_validator(
+            VALID_WEEKLY,
+            model=coverage_model(
+                end="2026-07-27T00:00:00+08:00",
+            ),
         )
-        result = run_validator(report)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn(
             "时间窗终点不得晚于快照时间",
@@ -299,7 +337,11 @@ class ValidateReportTests(unittest.TestCase):
             "work": [{"source_ref": "source://docs/one"}],
             "uncertain": [{"source_ref": "source://docs/two"}],
         }
-        result = run_validator(VALID_WEEKLY, ledger=ledger)
+        result = run_validator(
+            VALID_WEEKLY,
+            ledger=ledger,
+            model=coverage_model(),
+        )
         self.assertNotEqual(result.returncode, 0)
         errors = json.loads(result.stdout)["errors"]
         self.assertTrue(
@@ -398,33 +440,49 @@ class ValidateReportTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("--ledger-file", result.stderr)
 
-    def test_compact_coverage_line_passes(self):
-        compact = VALID_WEEKLY.replace(
-            "- 时间窗：2026-07-20T00:00:00+08:00 至 "
-            "2026-07-26T18:00:00+08:00\n"
-            "- 快照时间：2026-07-26T18:00:00+08:00\n"
-            "- 覆盖域：日历、消息、文档、任务、会议\n"
-            "- 权限缺口：话题群接口未覆盖\n"
-            "- 分类计数：work=2，uncertain=1",
-            "- 范围：2026-07-20T00:00:00+08:00 至 "
-            "2026-07-26T18:00:00+08:00｜"
-            "快照：2026-07-26T18:00:00+08:00｜"
-            "覆盖：日历、消息、文档、任务、会议｜"
-            "缺口：话题群接口未覆盖｜"
-            "计数：work=2，uncertain=1",
-        )
-        result = run_validator(compact)
+    def test_conditional_coverage_notice_passes(self):
+        result = run_validator(VALID_WEEKLY, model=coverage_model())
         self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_missing_conditional_coverage_notice_fails(self):
+        report = VALID_WEEKLY.replace(
+            "\n> 覆盖说明：已覆盖日历、消息、文档、任务、会议；"
+            "未能访问话题群接口未覆盖。\n",
+            "\n",
+        )
+        result = run_validator(report, model=coverage_model())
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "存在覆盖缺口时必须显示覆盖说明",
+            json.loads(result.stdout)["errors"],
+        )
+
+    def test_conditional_notice_must_include_every_covered_domain(self):
+        report = VALID_WEEKLY.replace("、会议", "")
+        result = run_validator(report, model=coverage_model())
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "覆盖说明遗漏已覆盖数据源：会议",
+            json.loads(result.stdout)["errors"],
+        )
+
+    def test_complete_coverage_must_not_render_notice(self):
+        result = run_validator(
+            VALID_WEEKLY,
+            model=coverage_model(gaps=[]),
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "没有覆盖缺口时不应显示覆盖说明",
+            json.loads(result.stdout)["errors"],
+        )
 
     def test_short_source_reference_resolves_to_ledger(self):
         report = VALID_WEEKLY.replace(
             "[工作来源](https://example.com/overview)",
             "[W1][W1]",
-        ).replace(
-            "- 分类计数：work=2，uncertain=1",
-            "- 分类计数：work=2，uncertain=1\n"
-            "[W1]: https://example.com/overview",
         )
+        report += "[W1]: https://example.com/overview\n"
         result = run_validator(report)
         self.assertEqual(result.returncode, 0, result.stdout)
 
@@ -446,11 +504,8 @@ class ValidateReportTests(unittest.TestCase):
         report = VALID_WEEKLY.replace(
             "[待复核来源](https://example.com/uncertain)",
             "[W1][W1]",
-        ).replace(
-            "- 分类计数：work=2，uncertain=1",
-            "- 分类计数：work=2，uncertain=1\n"
-            "[W1]: https://example.com/uncertain",
         )
+        report += "[W1]: https://example.com/uncertain\n"
         result = run_validator(report)
         self.assertNotEqual(result.returncode, 0)
         self.assertTrue(

@@ -34,7 +34,7 @@ def model(profile="weekly"):
                 "priority": 1,
                 "name": "报告 Skill",
                 "status": "completed",
-                "result": "形成六段式报告",
+                "result": "形成五段式报告",
                 "impact": "减少重复章节",
                 "decision": "使用结构化模型统一渲染",
                 "progress": "渲染器已开发完成",
@@ -121,7 +121,7 @@ def run_renderer(payload, output=False):
 
 
 class RenderReportTests(unittest.TestCase):
-    def test_weekly_report_has_six_sections_and_passes_validator(self):
+    def test_weekly_report_has_five_sections_and_passes_validator(self):
         tmp, result, report = run_renderer(model(), output=True)
         try:
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -135,7 +135,6 @@ class RenderReportTests(unittest.TestCase):
                     "## 风险与需协助事项",
                     "## 下周重点",
                     "## 待复核",
-                    "## 来源与覆盖",
                 ],
             )
             ledger_file = Path(tmp.name) / "ledger.json"
@@ -182,7 +181,7 @@ class RenderReportTests(unittest.TestCase):
             line = next(
                 item for item in result.stdout.splitlines() if "报告 Skill" in item
             )
-            self.assertLess(line.index("形成六段式报告"), line.index("影响："))
+            self.assertLess(line.index("形成五段式报告"), line.index("影响："))
             self.assertLess(line.index("影响："), line.index("决策："))
             self.assertLess(line.index("决策："), line.index("进展："))
         finally:
@@ -340,7 +339,7 @@ class RenderReportTests(unittest.TestCase):
         finally:
             tmp.cleanup()
 
-    def test_all_profiles_use_six_sections(self):
+    def test_all_profiles_use_five_sections(self):
         for profile in ("daily", "weekly", "monthly"):
             with self.subTest(profile=profile):
                 tmp, result, _ = run_renderer(model(profile))
@@ -351,7 +350,7 @@ class RenderReportTests(unittest.TestCase):
                             line.startswith("## ")
                             for line in result.stdout.splitlines()
                         ),
-                        6,
+                        5,
                     )
                 finally:
                     tmp.cleanup()
@@ -504,21 +503,38 @@ class RenderReportTests(unittest.TestCase):
         finally:
             tmp.cleanup()
 
-    def test_coverage_is_one_compact_lossless_line(self):
+    def test_complete_coverage_is_not_rendered(self):
         tmp, result, _ = run_renderer(model())
         try:
             self.assertEqual(result.returncode, 0, result.stderr)
-            coverage_lines = [
-                line
-                for line in result.stdout.splitlines()
-                if line.startswith("- 范围：")
-            ]
-            self.assertEqual(len(coverage_lines), 1)
-            self.assertIn("｜快照：", coverage_lines[0])
-            self.assertIn("｜覆盖：日历、消息、文档", coverage_lines[0])
-            self.assertIn("｜缺口：无", coverage_lines[0])
-            self.assertIn("｜计数：work=3，uncertain=0", coverage_lines[0])
-            self.assertNotIn("- 时间窗：", result.stdout)
+            self.assertNotIn("## 来源与覆盖", result.stdout)
+            self.assertNotIn("覆盖说明", result.stdout)
+            self.assertNotIn("work=3", result.stdout)
+        finally:
+            tmp.cleanup()
+
+    def test_access_gap_is_rendered_without_an_independent_section(self):
+        payload = model()
+        payload["coverage"]["access_gaps"] = ["群消息无权限"]
+        tmp, result, _ = run_renderer(payload)
+        try:
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn("## 来源与覆盖", result.stdout)
+            self.assertIn(
+                "> 覆盖说明：已覆盖日历、消息、文档；未能访问群消息无权限。",
+                result.stdout,
+            )
+            self.assertNotIn("work=3", result.stdout)
+        finally:
+            tmp.cleanup()
+
+    def test_no_available_domain_is_disclosed(self):
+        payload = model()
+        payload["coverage"]["domains"] = []
+        tmp, result, _ = run_renderer(payload)
+        try:
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("> 覆盖说明：未发现可用数据源。", result.stdout)
         finally:
             tmp.cleanup()
 

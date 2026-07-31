@@ -63,7 +63,6 @@ def valid_template():
         "risks": ("风险与需协助事项", "风险与需协助事项", "风险与依赖"),
         "next": ("明日重点", "下周重点", "下月重点"),
         "uncertain": ("待复核", "待复核", "待复核"),
-        "coverage": ("来源与覆盖", "来源与覆盖", "来源与覆盖"),
     }
     return {
         "schema_version": 1,
@@ -130,6 +129,60 @@ def cleanup(run_dir):
 
 
 class PrepareRunTests(unittest.TestCase):
+    def test_explicit_request_context_is_validated_and_persisted(self):
+        with tempfile.TemporaryDirectory() as request_tmp:
+            request_file = Path(request_tmp) / "request.json"
+            request_context = {
+                "schema_version": 1,
+                "request": "只整理 A 项目，排除招聘事项，重点说明已完成结果。",
+                "scope": ["A 项目"],
+                "exclusions": ["招聘事项"],
+                "emphasis": ["已完成结果"],
+            }
+            request_file.write_text(
+                json.dumps(request_context, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            tmp, result = run_prepare(
+                adapter_manifest(),
+                "--request-file",
+                str(request_file),
+            )
+            try:
+                self.assertEqual(result.returncode, 0, result.stderr)
+                summary = json.loads(result.stdout)
+                run_dir = summary["run_dir"]
+                stored = json.loads(
+                    Path(summary["request_context_file"]).read_text(
+                        encoding="utf-8"
+                    )
+                )
+                self.assertEqual(stored, request_context)
+                self.assertTrue(summary["request_context_explicit"])
+                plan = json.loads(
+                    Path(summary["plan_file"]).read_text(encoding="utf-8")
+                )
+                self.assertTrue(plan["request_context"]["isolated_semantic_stages"])
+                self.assertTrue(plan["request_context"]["explicit"])
+                graph = json.loads(
+                    Path(summary["execution_graph_file"]).read_text(
+                        encoding="utf-8"
+                    )
+                )
+                self.assertEqual(graph["graph_id"], "lark-work-report-v1")
+                self.assertEqual(
+                    graph["invariants"]["semantic_nodes"],
+                    ["classify", "extract", "synthesize"],
+                )
+                self.assertEqual(
+                    summary["execution_graph_digest"],
+                    plan["execution_graph"]["digest"],
+                )
+            finally:
+                if "run_dir" in locals():
+                    cleanup(run_dir)
+                tmp.cleanup()
+
     def test_batch_listing_builds_domain_batches(self):
         tmp, result = run_prepare(adapter_manifest(batch=True))
         try:

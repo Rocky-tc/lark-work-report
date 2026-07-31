@@ -94,6 +94,7 @@ class PortabilityTests(unittest.TestCase):
             "capability-adapters.md",
             "classification-contract.md",
             "collection-policy.md",
+            "fetch-contract.md",
             "extraction-contract.md",
             "relevance-and-retention.md",
             "evidence-model.md",
@@ -110,9 +111,11 @@ class PortabilityTests(unittest.TestCase):
     def test_semantic_contracts_are_loaded_at_their_own_stages(self):
         skill = (ROOT / "SKILL.md").read_text(encoding="utf-8")
         classification = skill.index("references/classification-contract.md")
+        fetch = skill.index("references/fetch-contract.md")
         extraction = skill.index("references/extraction-contract.md")
         synthesis = skill.index("references/synthesis-contract.md")
-        self.assertLess(classification, extraction)
+        self.assertLess(classification, fetch)
+        self.assertLess(fetch, extraction)
         self.assertLess(extraction, synthesis)
         self.assertIn("不能提前合并加载", skill)
 

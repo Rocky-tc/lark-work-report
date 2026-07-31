@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render a compact six-section work report from a structured JSON model."""
+"""Render a compact five-section work report from a structured JSON model."""
 
 import argparse
 import json
@@ -560,12 +560,12 @@ def render_uncertain(items, style="bullet", labels=None, sources=None):
     return format_items(contents, style)
 
 
-def render_coverage(value, source_definitions=None):
+def render_coverage_tail(value, source_definitions=None):
     coverage = require_object(value, "coverage")
     reject_unknown_fields(coverage, COVERAGE_FIELDS, "coverage")
-    start_text, start = parse_time(coverage.get("start"), "coverage.start")
-    end_text, end = parse_time(coverage.get("end"), "coverage.end")
-    snapshot_text, snapshot = parse_time(
+    _, start = parse_time(coverage.get("start"), "coverage.start")
+    _, end = parse_time(coverage.get("end"), "coverage.end")
+    _, snapshot = parse_time(
         coverage.get("snapshot"),
         "coverage.snapshot",
     )
@@ -595,16 +595,25 @@ def render_coverage(value, source_definitions=None):
         if not isinstance(value, int) or isinstance(value, bool) or value < 0:
             raise ValueError(f"{label} must be a non-negative integer")
 
-    lines = [
-        f"- 范围：{start_text} 至 {end_text}"
-        f"｜快照：{snapshot_text}"
-        f"｜覆盖：{'、'.join(domains) if domains else '无'}"
-        f"｜缺口：{'；'.join(gaps) if gaps else '无'}"
-        f"｜计数：work={work_count}，uncertain={uncertain_count}"
-    ]
+    lines = []
+    if gaps:
+        if domains:
+            lines.append(
+                f"> 覆盖说明：已覆盖{'、'.join(domains)}；"
+                f"未能访问{'；'.join(gaps)}。"
+            )
+        else:
+            lines.append(
+                f"> 覆盖说明：未发现可用数据源；"
+                f"未能访问{'；'.join(gaps)}。"
+            )
+    elif not domains:
+        lines.append("> 覆盖说明：未发现可用数据源。")
     definitions = source_definitions or []
     if definitions:
-        lines.extend(["", *definitions])
+        if lines:
+            lines.append("")
+        lines.extend(definitions)
     return lines
 
 
@@ -654,11 +663,16 @@ def render(payload, template=None, context=None):
             labels,
             sources,
         ),
-        render_coverage(payload.get("coverage"), sources.definitions()),
     )
     blocks = [f"# {title}"]
     for heading, lines in zip(sections, bodies):
         blocks.append(f"## {heading}\n" + "\n".join(lines))
+    tail = render_coverage_tail(
+        payload.get("coverage"),
+        sources.definitions(),
+    )
+    if tail:
+        blocks.append("\n".join(tail))
     return "\n\n".join(blocks) + "\n"
 
 

@@ -15,23 +15,24 @@ description: Use when 用户要通过任意可用的飞书连接器、MCP、CLI 
 - 现有飞书对象只读。能创建并回读文档时默认交付新文档，否则交付 Markdown；用户只要草稿时不创建。
 - 默认证据只存在受管临时目录，交付后清理；只有用户明确要求时才持久化 `work`，或 `work` 与 `uncertain`。
 - 默认 `depth=standard`；可选 `quick`、`deep`。日期有歧义时先展示解析结果，不静默猜测。
-- 默认读取当前主体已保存的个人模板；模板只改变文本显示层，不改变六段语义、事实、证据和隐私规则。用户可用 `--template-mode none` 临时停用。
+- 默认读取当前主体已保存的个人模板；模板只改变五个正文段落的文本显示层，不改变事实、证据、内部覆盖记录和隐私规则。用户可用 `--template-mode none` 临时停用。
 
 所有命令从本 Skill 根目录执行，不假设宿主品牌或固定安装位置。
 
 ## 执行
 
-1. **准备运行。** 把可用适配器 manifest 写入 `{"adapters":[...]}`，执行：
+1. **准备运行。** 把用户本次原始请求及全部范围、排除项和强调项写入严格的 `request.json`，把可用适配器 manifest 写入 `{"adapters":[...]}`，执行：
 
    ```bash
    python3 scripts/prepare-run.py \
      --adapters-file <adapters.json> \
+     --request-file <request.json> \
      --period weekly --relative previous \
      --reference 2026-07-27 \
      --snapshot 2026-07-27T10:00:00+08:00
    ```
 
-   自定义周期增加 `--start`、`--end`；可重复传 `--domain`。月报已有可靠周报缓存时传 `--monthly-cache present`；深度模式传 `--depth deep`；仅本次使用模板时传 `--template-file`。保存返回的 `run_dir` 和 `plan_file`。
+   `request.json` 字段只允许 `schema_version=1`、`request`、`scope`、`exclusions`、`emphasis`；`request` 保存用户原始请求。自定义周期增加 `--start`、`--end`；可重复传 `--domain`。月报已有可靠周报缓存时传 `--monthly-cache present`；深度模式传 `--depth deep`；仅本次使用模板时传 `--template-file`。保存返回的 `run_dir`、`plan_file` 和 `execution_graph_file`。执行图是代码生成并校验的唯一计划：语义节点固定为分类、批量提取和一次综合，不由 Agent 临时增删或重新规划。
 
 2. **确认身份、模板并列举元数据。** 读取 `run-plan.json`。按计划执行 `identity_call` 和可选 `template_call`，分别写入 `identity.json` 与经过校验的 `template-profile.json`。执行每个 `metadata_wave` 前用 `record-batch` 原子预留调用；同波并行、跨波顺序执行。规划器已经按收益与适配器覆盖关系消除重复查询。候选只含元数据，写入 `<run-dir>/candidates.json`。
 
@@ -44,27 +45,29 @@ description: Use when 用户要通过任意可用的飞书连接器、MCP、CLI 
      --output <run-dir>/fetch-queue.json
    ```
 
-   命令按精确 `source_ref` 跨域去重，以单一索引保存完整机器元数据。此后完整读取 [stage-io.md](references/stage-io.md)，并反复执行：
+   命令按精确 `source_ref` 跨域去重，以单一索引保存完整机器元数据。此后反复执行：
 
    ```bash
    python3 scripts/stage-io.py next --run-dir <run-dir>
    ```
 
-   只读取返回的 `packet_file`，按其中的 `stage` 处理，再把严格结果写入 `<run-dir>` 内的临时 JSON 并提交：
+   每轮只完整读取返回的 `contract_file` 和 `packet_file`；契约路径只会指向 [fetch-contract.md](references/fetch-contract.md)、[extraction-contract.md](references/extraction-contract.md) 或 [synthesis-contract.md](references/synthesis-contract.md)，不得提前合并读取。宿主支持新上下文时，`context_mode=fresh` 的 `extract` / `synthesize` 必须使用相同模型在无历史上下文中执行，只带当前契约与包。把符合 `result_schema_file` 的语义结果写入 `<run-dir>`，用 `next` 私下返回的包 ID 提交：
 
    ```bash
    python3 scripts/stage-io.py commit \
      --run-dir <run-dir> \
-     --result-file <stage-result.json>
+     --result-file <stage-result.json> \
+     --package-id <package_id> \
+     [--usage-file <host-usage.json>]
    ```
 
-   `fetch` 前按包内批次数用 `record-batch` 预留外部调用，完整抓取每项正文；`extract` 时读取本阶段唯一必读的 [extraction-contract.md](references/extraction-contract.md)；`synthesize` 时读取本阶段唯一必读的 [synthesis-contract.md](references/synthesis-contract.md)。不要把三个契约同时加载。
+   `next` 的 `node_id` 和阶段顺序必须与静态执行图一致；图摘要由私有回执校验，不进入模型上下文。`fetch` 前按包内批次数用 `record-batch` 预留外部调用；包声明 `output.mode=managed_file` 时让适配器把完整结果直接写入 `result_file`，阶段结果只交 `batch_ref`。明确的无权限、已删除或不可访问直接交 `access_gap`。`extract` 对跨抓取批次重新无损合包，并以顶层 `cN` / `xN` 精确共享完全相同的正文与上下文；`synthesize` 最多一次。不要把三个阶段契约同时加载。
 
-   每次 `commit` 都回传下一阶段；直到 `stage=complete`。接口只向 Agent 暴露本阶段必要数据和 `i0`、`c0`、`w0`、`u0` 等短引用，私有回执负责展开稳定 ID、来源和文件路径，并用输入摘要拒绝陈旧结果。正文无损规范化、证据完整性编译、双账本归并、标题与覆盖信息回填、报告渲染和验证均由接口确定性执行。缺失、重复、错分区、身份重复、未知字段、非法短引用或中途输入变化都会停止。
+   每次 `commit` 都回传图中下一节点，直到 `stage=complete`。接口只向 Agent 暴露本阶段必要数据和 `i0`、`c0`、`w0`、`u0` 等短引用，私有回执负责展开稳定 ID、来源和文件路径，并用输入摘要拒绝陈旧结果。候选中已有的权威时间与行动事实、正文无损规范化、证据完整性编译、双账本归并、标题与覆盖信息回填、简单单证据条目直出、报告渲染和验证均由接口确定性执行；阶段包体、结果体、耗时与宿主写入的真实模型用量只进私有计量文件。`usage-file` 必须记录实际 `provider`、`model` 和 Token，不得让模型估算。缺失、冲突、重复、错分区、身份重复、未知字段、非法短引用、图被改写或中途输入变化都会停止。
 
-4. **必要时增量修复。** 如果阶段接口返回编译错误，使用生成的 `repair-queue.json` 只重抓或重提取受影响项；不得重新处理已验证项。底层排错时才直接使用 `normalize-fetch-body.py`、`compile-evidence.py` 或 `finalize-run.py`。
+4. **必要时增量修复。** 阶段提交若返回 `repair_packet` 和 `repair_schema`，只提交其中列出的 JSON 路径补丁；编译错误则使用 `repair-queue.json` 只重抓或重提取受影响项。不得重新处理已验证项。底层排错时才直接使用 `normalize-fetch-body.py`、`compile-evidence.py` 或 `finalize-run.py`。
 
-5. **交付并清理。** `complete` 返回的 `report_file` 已通过账本校验。创建文档后必须回读标题、章节、来源和覆盖说明；创建与回读分别计一次外部调用。交付成功后执行：
+5. **交付并清理。** `complete` 返回的 `report_file` 已通过账本校验。创建文档后必须回读标题、五个正文章节、来源，以及存在访问缺口时的覆盖说明；创建与回读分别计一次外部调用。交付成功后执行：
 
    ```bash
    python3 scripts/manage-run.py cleanup --run-dir <run-dir>
@@ -72,11 +75,11 @@ description: Use when 用户要通过任意可用的飞书连接器、MCP、CLI 
 
 ## 输出
 
-- 固定六段语义：摘要、进展与结果、风险、下一周期重点、待复核、来源与覆盖；有效模板可改变标题、显示名称、分组、列表/段落、字段标签和文风。
+- 固定五段正文：摘要、进展与结果、风险、下一周期重点、待复核；有效模板可改变标题、显示名称、分组、列表/段落、字段标签和文风。
 - 条目按 `priority` 排序；同一条按结果、影响、决策、进展排序；空章节只写 `- 无`。
-- 报告模型 v5 只写叙事字段、账本指纹和 `wN` / `uN` 短引用；阶段接口回填真实证据 ID、主体、标题、周期、覆盖信息、多来源、排序依据和行动事实。v1–v4 继续兼容。
-- 同一来源出现两次以上时，定稿器改用 `W1` / `U1` 并在文末只保留一次完整 URL；单次来源仍使用行内链接。
-- 摘要中的可选影响或决策若已在详细章节逐字出现，只展示一次；摘要核心结果不省略。覆盖范围、快照、覆盖域、缺口和计数合并为一行。
+- 报告模型 v5 只写叙事字段和 `wN` / `uN` 短引用；包 ID、输入摘要和账本指纹由阶段接口私下注入。只有单记录、单来源、无冲突且字段充分的条目可省略必填叙事或由接口补齐缺失必填字段；多证据归纳、冲突项和个人模板文风继续由模型写作。阶段接口回填真实证据 ID、主体、标题、周期、覆盖信息、多来源、排序依据和行动事实；v1–v4 继续兼容。
+- 同一来源出现两次以上时，定稿器改用 `W1` / `U1`，并在文末用 Markdown 引用定义只保留一次完整 URL；单次来源仍使用行内链接。
+- 摘要中的可选影响或决策若已在详细章节逐字出现，只展示一次；摘要核心结果不省略。时间范围、快照、覆盖域和计数留在内部验收数据中；只有存在访问缺口或没有可用数据源时，文末才显示一条无标题的覆盖说明。
 - 关键事实、数字、状态、结果和决策必须有来源锚。
 - 报告只出现 `work` 与 `uncertain`；证据不足时输出短报告和覆盖缺口，不虚构。
 
@@ -89,7 +92,7 @@ description: Use when 用户要通过任意可用的飞书连接器、MCP、CLI 
 
 ## 按需参考
 
-三个阶段契约分别在进入对应阶段时读取，不能提前合并加载。其余文件仅在命中条件时完整读取：
+每次 `next` 返回当前唯一 `contract_file`，不能提前合并加载阶段契约。其余文件仅在命中条件时完整读取：
 
 | 条件 | 文件 |
 |---|---|
@@ -100,6 +103,7 @@ description: Use when 用户要通过任意可用的飞书连接器、MCP、CLI 
 | 用户改变格式、比较口径或周期粒度 | [report-profiles.md](references/report-profiles.md) |
 | 用户提供旧报告/模板、改变或重置个人格式 | [template-profiles.md](references/template-profiles.md) |
 | 阶段包、短引用或结果提交被拒绝 | [stage-io.md](references/stage-io.md) |
+| 需要记录真实用量或执行同数据同模型 A/B | [stage-io.md](references/stage-io.md) |
 | 报告模型被定稿器拒绝 | [report-rendering.md](references/report-rendering.md) |
 | 文档创建、回读或验收失败 | [output-contract.md](references/output-contract.md) |
 

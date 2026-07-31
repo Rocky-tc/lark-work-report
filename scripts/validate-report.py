@@ -21,19 +21,9 @@ SOURCE_DEFINITION = re.compile(
 )
 SOURCE_MARKER = re.compile(r"\[((?:W|U)\d+)\]\[\1\]")
 EMPTY_ITEM = re.compile(r"^(?:-\s*)?(无|暂无|未发现|证据不足)(?:[。；;.]|$)")
-CLASSIFICATION_COUNTS = re.compile(
-    r"^-\s*分类计数[：:]\s*work=(\d+)[，,\s]+uncertain=(\d+)\s*$",
-    re.IGNORECASE | re.MULTILINE,
-)
-TIME_WINDOW = re.compile(r"^-\s*时间窗[：:]\s*(\S+)\s+至\s+(\S+)\s*$", re.MULTILINE)
-SNAPSHOT_TIME = re.compile(r"^-\s*快照时间[：:]\s*(\S+)\s*$", re.MULTILINE)
-COMPACT_COVERAGE = re.compile(
-    r"^-\s*范围[：:]\s*(\S+)\s+至\s+(\S+)"
-    r"｜快照[：:]\s*(\S+)"
-    r"｜覆盖[：:]\s*(.+?)"
-    r"｜缺口[：:]\s*(.+?)"
-    r"｜计数[：:]\s*work=(\d+)[，,]\s*uncertain=(\d+)\s*$",
-    re.IGNORECASE | re.MULTILINE,
+COVERAGE_NOTICE = re.compile(
+    r"^>\s*覆盖说明[：:]\s*(.+?)\s*$",
+    re.MULTILINE,
 )
 FORBIDDEN_CLASS = re.compile(
     r"\b(?:private|chatter)\b|私人材料|私人标题|私人摘要|闲聊材料|闲聊标题|闲聊摘要",
@@ -51,6 +41,8 @@ def split_sections(markdown):
             current = heading.group(1)
             headings.append(current)
             sections.setdefault(current, [])
+        elif COVERAGE_NOTICE.match(raw_line) or SOURCE_DEFINITION.match(raw_line):
+            current = None
         elif current is not None:
             sections[current].append(raw_line)
     return sections, headings
@@ -63,54 +55,6 @@ def parse_aware_datetime(value, label, errors):
         errors.append(f"{label}不是有效的 ISO 8601 时间：{value}")
         return None
     return parsed
-
-
-def validate_coverage(coverage, errors):
-    compact = COMPACT_COVERAGE.search(coverage)
-    if compact:
-        start = parse_aware_datetime(compact.group(1), "时间窗起点", errors)
-        end = parse_aware_datetime(compact.group(2), "时间窗终点", errors)
-        snapshot_time = parse_aware_datetime(
-            compact.group(3),
-            "快照时间",
-            errors,
-        )
-        if start and end and start >= end:
-            errors.append("时间窗起点必须早于终点")
-        if end and snapshot_time and end > snapshot_time:
-            errors.append("时间窗终点不得晚于快照时间")
-        return {
-            "work": int(compact.group(6)),
-            "uncertain": int(compact.group(7)),
-        }
-
-    for label in ("覆盖域", "权限缺口"):
-        if not re.search(rf"^-\s*{label}[：:]\s*\S+", coverage, re.MULTILINE):
-            errors.append(f"覆盖说明缺少：{label}")
-
-    window = TIME_WINDOW.search(coverage)
-    snapshot = SNAPSHOT_TIME.search(coverage)
-    if not window:
-        errors.append("覆盖说明缺少有效时间窗")
-    if not snapshot:
-        errors.append("覆盖说明缺少有效快照时间")
-
-    start = end = snapshot_time = None
-    if window:
-        start = parse_aware_datetime(window.group(1), "时间窗起点", errors)
-        end = parse_aware_datetime(window.group(2), "时间窗终点", errors)
-    if snapshot:
-        snapshot_time = parse_aware_datetime(snapshot.group(1), "快照时间", errors)
-    if start and end and start >= end:
-        errors.append("时间窗起点必须早于终点")
-    if end and snapshot_time and end > snapshot_time:
-        errors.append("时间窗终点不得晚于快照时间")
-
-    counts = CLASSIFICATION_COUNTS.search(coverage)
-    if not counts:
-        errors.append("覆盖说明缺少 work/uncertain 两类聚合计数")
-        return None
-    return {"work": int(counts.group(1)), "uncertain": int(counts.group(2))}
 
 
 def parse_source_registry(markdown, errors):
@@ -202,13 +146,58 @@ def validate_ledger(ledger, coverage_counts, errors):
 
 def validate_model_coverage(model, ledger):
     errors = []
-    if not isinstance(model, dict) or model.get("schema_version") not in {3, 4}:
+    if not isinstance(model, dict):
         return {"ok": True, "errors": []}
+    coverage = model.get("coverage")
+    if not isinstance(coverage, dict):
+        errors.append("报告模型缺少 coverage 对象")
+    else:
+        start = parse_aware_datetime(
+            coverage.get("start"),
+            "时间窗起点",
+            errors,
+        )
+        end = parse_aware_datetime(
+            coverage.get("end"),
+            "时间窗终点",
+            errors,
+        )
+        snapshot = parse_aware_datetime(
+            coverage.get("snapshot"),
+            "快照时间",
+            errors,
+        )
+        if start and end and start >= end:
+            errors.append("时间窗起点必须早于终点")
+        if end and snapshot and end > snapshot:
+            errors.append("时间窗终点不得晚于快照时间")
+        for field in ("domains", "access_gaps"):
+            values = coverage.get(field)
+            if not isinstance(values, list) or not all(
+                isinstance(value, str) and value.strip()
+                for value in values
+            ):
+                errors.append(f"coverage.{field} 必须是字符串数组")
+        for name, field in (
+            ("work", "work_count"),
+            ("uncertain", "uncertain_count"),
+        ):
+            count = coverage.get(field)
+            if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+                errors.append(f"coverage.{field} 必须是非负整数")
+                continue
+            items = ledger.get(name) if isinstance(ledger, dict) else None
+            if isinstance(items, list) and len(items) != count:
+                errors.append(
+                    f"分类计数与证据账本不一致：{name}={count}，"
+                    f"ledger={len(items)}"
+                )
+
+    if model.get("schema_version") not in {3, 4}:
+        return {"ok": not errors, "errors": errors}
     if not isinstance(ledger, dict) or ledger.get("schema_version") != 2:
-        return {
-            "ok": False,
-            "errors": ["报告模型 v3/v4 要求证据账本 schema_version=2"],
-        }
+        errors.append("报告模型 v3/v4 要求证据账本 schema_version=2")
+        return {"ok": False, "errors": errors}
 
     ledger_ids = {"work": set(), "uncertain": set()}
     for name in ("work", "uncertain"):
@@ -289,7 +278,7 @@ def validate_model_coverage(model, ledger):
     return {"ok": not errors, "errors": errors}
 
 
-def validate(markdown, profile, ledger, template=None):
+def validate(markdown, profile, ledger, template=None, model=None):
     errors = []
     warnings = []
     sections, headings = split_sections(markdown)
@@ -301,6 +290,8 @@ def validate(markdown, profile, ledger, template=None):
 
     if not re.search(r"^#\s+\S+", markdown, re.MULTILINE):
         errors.append("缺少一级标题")
+    if "来源与覆盖" in headings:
+        errors.append("不得输出独立“来源与覆盖”章节")
 
     for name in required:
         count = headings.count(name)
@@ -334,9 +325,38 @@ def validate(markdown, profile, ledger, template=None):
         if not line_has_typed_source(line, "uncertain", source_definitions):
             errors.append(f"章节“{uncertain_name}”的候选缺少待复核来源锚：{line}")
 
-    coverage_name = required[-1]
-    coverage = "\n".join(sections.get(coverage_name, []))
-    coverage_counts = validate_coverage(coverage, errors)
+    coverage_counts = {
+        name: len(ledger.get(name, []))
+        if isinstance(ledger, dict) and isinstance(ledger.get(name), list)
+        else 0
+        for name in ("work", "uncertain")
+    }
+    notices = COVERAGE_NOTICE.findall(markdown)
+    if len(notices) > 1:
+        errors.append("覆盖说明最多只能出现一次")
+    if isinstance(model, dict) and isinstance(model.get("coverage"), dict):
+        model_coverage = model["coverage"]
+        domains = model_coverage.get("domains")
+        gaps = model_coverage.get("access_gaps")
+        requires_notice = (
+            isinstance(gaps, list)
+            and bool(gaps)
+        ) or (
+            isinstance(domains, list)
+            and not domains
+        )
+        if requires_notice and not notices:
+            errors.append("存在覆盖缺口时必须显示覆盖说明")
+        if not requires_notice and notices:
+            errors.append("没有覆盖缺口时不应显示覆盖说明")
+        if notices and isinstance(gaps, list):
+            for gap in gaps:
+                if isinstance(gap, str) and gap not in notices[0]:
+                    errors.append(f"覆盖说明遗漏访问缺口：{gap}")
+        if notices and isinstance(domains, list):
+            for domain in domains:
+                if isinstance(domain, str) and domain not in notices[0]:
+                    errors.append(f"覆盖说明遗漏已覆盖数据源：{domain}")
     work_sources = set(WORK_SOURCE_LINK.findall(markdown))
     uncertain_sources = set(UNCERTAIN_SOURCE_LINK.findall(markdown))
     work_sources.update(
@@ -371,7 +391,7 @@ def validate(markdown, profile, ledger, template=None):
     if not work_sources:
         warnings.append("报告没有任何可核验工作来源锚")
 
-    ledger_refs = validate_ledger(ledger, coverage_counts, errors)
+    ledger_refs = validate_ledger(ledger, None, errors)
     for source_ref in sorted(work_sources - ledger_refs["work"]):
         errors.append(f"工作来源锚不在 work 账本中：{source_ref}")
     for source_ref in sorted(uncertain_sources - ledger_refs["uncertain"]):
@@ -407,7 +427,7 @@ def main():
     except ValueError as exc:
         print(json.dumps({"error": str(exc)}, ensure_ascii=False), file=sys.stderr)
         return 2
-    result = validate(markdown, args.profile, ledger, template)
+    result = validate(markdown, args.profile, ledger, template, model)
     if model is not None:
         model_result = validate_model_coverage(model, ledger)
         result["errors"].extend(model_result["errors"])

@@ -78,7 +78,7 @@ python3 scripts/validate-adapter.py --file <adapter-manifest.json>
 - `prefetch_relevance`；
 - `classification_reason`。
 
-可选元数据为 `title`、`container`、`participants`、`workstream_hint`、`priority`、`cursor`、`starts_at`、`ends_at`、`due_at`、`requires_response`、`action_kind`、`assignee_relation`。时间必须带时区；行动类型和责任关系使用 [evidence-model.md](evidence-model.md) 的枚举。候选不得包含 `body`、`content`、`raw_content`、`transcript`、`message_text`、`full_text` 或等价正文。
+可选元数据为 `title`、`container`、`participants`、`workstream_hint`、`priority`、`cursor`、`starts_at`、`ends_at`、`due_at`、`requires_response`、`action_kind`、`assignee_relation`。时间必须带时区；行动类型和责任关系使用 [evidence-model.md](evidence-model.md) 的枚举。适配器只有在字段由来源直接给出时才返回 `starts_at`、`ends_at`、`due_at`、`requires_response`、`action_kind` 或 `assignee_relation`，不得从参会、@、编辑或讨论行为推断。阶段接口会确定性回填这些已声明事实；未提供的字段继续由正文语义核验。候选不得包含 `body`、`content`、`raw_content`、`transcript`、`message_text`、`full_text` 或等价正文。
 
 `domains` 表示适配器真正需要调用的查询域，`domain_coverage` 可声明一次查询返回的证据类型。键必须属于 `domains`，值必须包含键自身。例如 `im → [im, mentions]` 表示查询消息时已同时覆盖 @ 提及，规划器不会再单独查询 `mentions`。未声明时按一对一覆盖处理。
 
@@ -98,7 +98,7 @@ python3 scripts/validate-adapter.py --file <adapter-manifest.json>
 source://<adapter_id>/<source_type>/<stable_id>
 ```
 
-`file_output=true` 表示适配器能把完整结果直接写入抓取批次指定的受管 `body_file`；否则宿主必须在调用后立即原样写入该文件，不能把正文留在对话或终端摘要中。`parallel_safe=true` 与 `max_parallelism` 表示不同抓取批次可按受控波次并行；未明确声明时必须串行。
+`file_output=true` 表示适配器能把以当前 `batch_ref` / `item_ref` 标识的完整结果直接写入 fetch 包指定的受管 `result_file`；阶段提交只回 `batch_ref`，正文不经过 Agent 结果。接口校验后再私下恢复稳定 ID，写入标准 `body_file` 并生成无损语义文件。适配器明确得到无权限、已删除或不可访问时写 `outcome=access_gap` 与最小 `reason`，不得伪造空正文。没有文件输出能力时使用同一字段结构内联提交。`parallel_safe=true` 与 `max_parallelism` 表示不同抓取批次可按受控波次并行；未明确声明时必须串行。
 
 正文核验结果按 [evidence-model.md](evidence-model.md) 转换为逐项提取结果。新增来源只需新增适配器映射，不得修改归并器或报告渲染逻辑。
 
@@ -138,7 +138,7 @@ source://<adapter_id>/<source_type>/<stable_id>
 2. 已安装并认证的 CLI；
 3. 用户提供的 Markdown、JSON、CSV、文档或消息导出。
 
-不要切换全局身份、修改全局配置或扩大权限。不同数据域可以混用适配器，但每条候选必须保留自己的 `adapter_id`，并在覆盖说明中记录实际来源和能力缺口。
+不要切换全局身份、修改全局配置或扩大权限。不同数据域可以混用适配器，但每条候选必须保留自己的 `adapter_id`，并在内部覆盖记录中保存实际来源和能力缺口；存在访问缺口时再条件性显示说明。
 
 ## 调用计数
 

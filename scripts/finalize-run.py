@@ -134,11 +134,18 @@ def finalize(
         plan,
         identity,
         audit,
+        allow_direct_fill=template is None,
     )
     if hydrated_model.get("profile") != profile:
         raise ValueError("hydrated report model profile does not match the run plan")
     markdown = RENDER_REPORT.render(hydrated_model, template, context)
-    validation = VALIDATE_REPORT.validate(markdown, profile, ledger, template)
+    validation = VALIDATE_REPORT.validate(
+        markdown,
+        profile,
+        ledger,
+        template,
+        hydrated_model,
+    )
     model_validation = VALIDATE_REPORT.validate_model_coverage(
         hydrated_model,
         ledger,

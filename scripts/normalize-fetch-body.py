@@ -84,17 +84,28 @@ def normalize(request, body):
     seen = set()
     blobs = {}
     items = []
+    access_gaps = []
     for index, result in enumerate(results):
         label = f"fetch body.results[{index}]"
+        global_id = require_text(result.get("global_id"), f"{label}.global_id")
+        if global_id in seen:
+            raise ValueError(f"fetch body duplicates global_id: {global_id}")
+        seen.add(global_id)
+        if result.get("outcome") == "access_gap":
+            strict_fields(result, {"global_id", "outcome", "reason"}, label)
+            access_gaps.append(
+                {
+                    "global_id": global_id,
+                    "outcome": "access_gap",
+                    "reason": require_text(result.get("reason"), f"{label}.reason"),
+                }
+            )
+            continue
         strict_fields(
             result,
             {"global_id", "content_type", "content", "context"},
             label,
         )
-        global_id = require_text(result.get("global_id"), f"{label}.global_id")
-        if global_id in seen:
-            raise ValueError(f"fetch body duplicates global_id: {global_id}")
-        seen.add(global_id)
         content_type = result.get("content_type")
         if content_type not in CONTENT_TYPES:
             raise ValueError(f"{label}.content_type is invalid")
@@ -117,7 +128,10 @@ def normalize(request, body):
                 "context": context,
             }
         )
-    actual_ids = [item["global_id"] for item in items]
+    actual_ids = [
+        *[item["global_id"] for item in items],
+        *[item["global_id"] for item in access_gaps],
+    ]
     if set(actual_ids) != set(expected_ids):
         missing = len(set(expected_ids) - set(actual_ids))
         extra = len(set(actual_ids) - set(expected_ids))
@@ -126,11 +140,13 @@ def normalize(request, body):
         )
     order = {global_id: index for index, global_id in enumerate(expected_ids)}
     items.sort(key=lambda item: order[item["global_id"]])
+    access_gaps.sort(key=lambda item: order[item["global_id"]])
     return {
         "schema_version": 1,
         "batch_id": batch_id,
         "content_blobs": blobs,
         "items": items,
+        "access_gaps": access_gaps,
     }
 
 

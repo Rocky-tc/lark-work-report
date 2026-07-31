@@ -33,8 +33,7 @@
         "progress",
         "risks",
         "next",
-        "uncertain",
-        "coverage"
+        "uncertain"
       ],
       "properties": {
         "summary": {"$ref": "#/$defs/section"},

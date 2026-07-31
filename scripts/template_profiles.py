@@ -15,8 +15,8 @@ SEMANTIC_SLOTS = (
     "risks",
     "next",
     "uncertain",
-    "coverage",
 )
+LEGACY_COVERAGE_SLOT = "coverage"
 REPORT_PROFILES = tuple(PROFILE_SECTIONS)
 ITEM_STYLES = {"bullet", "numbered", "paragraph"}
 WORKSTREAM_LAYOUTS = {"inline", "subsection"}
@@ -99,7 +99,11 @@ def validate_title_pattern(value):
 
 def validate_sections(value):
     sections = require_object(value, "sections")
-    reject_unknown_fields(sections, set(SEMANTIC_SLOTS), "sections")
+    reject_unknown_fields(
+        sections,
+        set(SEMANTIC_SLOTS) | {LEGACY_COVERAGE_SLOT},
+        "sections",
+    )
     missing = [slot for slot in SEMANTIC_SLOTS if slot not in sections]
     if missing:
         raise ValueError(f"sections is missing semantic slots: {', '.join(missing)}")
@@ -135,12 +139,44 @@ def validate_sections(value):
                 f"sections.{slot}.item_style must be one of "
                 + ", ".join(sorted(ITEM_STYLES))
             )
-        if slot == "coverage" and item_style != "bullet":
-            raise ValueError("sections.coverage.item_style must be bullet")
         normalized[slot] = {
             "labels": normalized_labels,
             "item_style": item_style,
         }
+
+    legacy_coverage = sections.get(LEGACY_COVERAGE_SLOT)
+    if legacy_coverage is not None:
+        legacy_coverage = require_object(
+            legacy_coverage,
+            "sections.coverage",
+        )
+        reject_unknown_fields(
+            legacy_coverage,
+            SECTION_FIELDS,
+            "sections.coverage",
+        )
+        labels = require_object(
+            legacy_coverage.get("labels"),
+            "sections.coverage.labels",
+        )
+        reject_unknown_fields(
+            labels,
+            set(REPORT_PROFILES),
+            "sections.coverage.labels",
+        )
+        for profile in REPORT_PROFILES:
+            if profile not in labels:
+                raise ValueError(
+                    "sections.coverage.labels is missing profiles: "
+                    + profile
+                )
+            safe_text(
+                labels[profile],
+                f"sections.coverage.labels.{profile}",
+                maximum=48,
+            )
+        if legacy_coverage.get("item_style") != "bullet":
+            raise ValueError("sections.coverage.item_style must be bullet")
 
     for profile, labels in labels_by_profile.items():
         if len(set(labels)) != len(labels):

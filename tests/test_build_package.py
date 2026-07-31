@@ -80,6 +80,34 @@ class BuildPackageTests(unittest.TestCase):
                 names,
             )
             self.assertIn(
+                "lark-work-report/scripts/request_context.py",
+                names,
+            )
+            self.assertIn(
+                "lark-work-report/scripts/execution_graph.py",
+                names,
+            )
+            self.assertIn(
+                "lark-work-report/scripts/usage_metrics.py",
+                names,
+            )
+            self.assertIn(
+                "lark-work-report/scripts/record-node-usage.py",
+                names,
+            )
+            self.assertIn(
+                "lark-work-report/scripts/record-run-usage.py",
+                names,
+            )
+            self.assertIn(
+                "lark-work-report/scripts/compare-runs.py",
+                names,
+            )
+            self.assertIn(
+                "lark-work-report/references/fetch-contract.md",
+                names,
+            )
+            self.assertIn(
                 "lark-work-report/references/stage-io.md",
                 names,
             )

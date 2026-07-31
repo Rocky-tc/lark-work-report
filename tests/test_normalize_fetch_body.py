@@ -56,6 +56,36 @@ def body(*results):
 
 
 class NormalizeFetchBodyTests(unittest.TestCase):
+    def test_authoritative_access_gap_is_preserved_without_body_text(self):
+        source_request = request("a", "b")
+        source_body = body(
+                {
+                    "global_id": "a",
+                    "content_type": "text",
+                    "content": "完整正文",
+                    "context": {},
+                },
+                {
+                    "global_id": "b",
+                    "outcome": "access_gap",
+                    "reason": "当前身份无权限",
+                },
+        )
+        tmp, completed, result = run_normalizer(source_request, source_body)
+        self.addCleanup(tmp.cleanup)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual([item["global_id"] for item in result["items"]], ["a"])
+        self.assertEqual(
+            result["access_gaps"],
+            [
+                {
+                    "global_id": "b",
+                    "outcome": "access_gap",
+                    "reason": "当前身份无权限",
+                }
+            ],
+        )
+
     def test_text_and_context_are_preserved_exactly_and_identical_content_deduped(self):
         content = "第一行\r\n第二行\n\n完整正文"
         tmp, result, payload = run_normalizer(

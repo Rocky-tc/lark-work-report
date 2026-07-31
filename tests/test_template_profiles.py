@@ -211,6 +211,16 @@ class TemplateProfileTests(unittest.TestCase):
         finally:
             tmp.cleanup()
 
+    def test_new_profile_may_omit_legacy_coverage_section(self):
+        payload = template_profile()
+        del payload["sections"]["coverage"]
+        tmp, result = self.run_validate(payload)
+        try:
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(json.loads(result.stdout)["ok"])
+        finally:
+            tmp.cleanup()
+
     def test_fetched_profile_must_match_normalized_source(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -309,6 +319,8 @@ class TemplateProfileTests(unittest.TestCase):
             self.assertIn("判断：使用白名单档案", markdown)
             self.assertIn("## 请我确认", markdown)
             self.assertIn("待确认原因：样例缺少月报标题", markdown)
+            self.assertNotIn("## 依据与范围", markdown)
+            self.assertNotIn("覆盖说明", markdown)
 
             validated = subprocess.run(
                 [

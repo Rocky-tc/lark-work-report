@@ -20,12 +20,28 @@ def main():
     commit_parser = commands.add_parser("commit")
     commit_parser.add_argument("--run-dir", required=True)
     commit_parser.add_argument("--result-file", required=True)
+    commit_parser.add_argument(
+        "--package-id",
+        help="Package ID returned by next; keeps machine envelope out of model output",
+    )
+    commit_parser.add_argument(
+        "--usage-file",
+        help=(
+            "Host-written usage JSON inside the run directory; keeps provider, "
+            "model, and token counts out of model output"
+        ),
+    )
     args = parser.parse_args()
     try:
         if args.command == "next":
             result = STAGE_IO.next_stage(args.run_dir)
         else:
-            result = STAGE_IO.commit_stage(args.run_dir, args.result_file)
+            result = STAGE_IO.commit_stage(
+                args.run_dir,
+                args.result_file,
+                args.package_id,
+                args.usage_file,
+            )
     except (OSError, ValueError) as exc:
         emit_json({"error": str(exc)}, sys.stderr)
         return 2
