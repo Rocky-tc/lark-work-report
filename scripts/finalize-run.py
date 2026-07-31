@@ -15,6 +15,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 MANAGE_RUN = load_script(SCRIPT_DIR, "manage-run.py")
 RENDER_REPORT = load_script(SCRIPT_DIR, "render-report.py")
 VALIDATE_REPORT = load_script(SCRIPT_DIR, "validate-report.py")
+REPORT_HYDRATION = load_script(SCRIPT_DIR, "report_hydration.py")
 
 
 def checked_file(run_dir, value, default_name, *, must_exist):
@@ -99,6 +100,18 @@ def finalize(
     plan = read_json(plan_file, "run plan")
     model = read_json(model_file, "report model")
     ledger = read_json(ledger_file, "evidence ledger")
+    identity_file = run_dir / "identity.json"
+    identity = (
+        read_json(identity_file, "identity")
+        if identity_file.is_file() and not identity_file.is_symlink()
+        else None
+    )
+    audit_file = run_dir / "extraction-audit.json"
+    audit = (
+        read_json(audit_file, "extraction audit")
+        if audit_file.is_file() and not audit_file.is_symlink()
+        else None
+    )
     profile = (
         plan.get("period", {}).get("routed_profile")
         if isinstance(plan, dict)
@@ -106,7 +119,7 @@ def finalize(
     )
     if profile not in VALIDATE_REPORT.PROFILE_SECTIONS:
         raise ValueError("run plan has an invalid routed profile")
-    if model.get("profile") != profile:
+    if model.get("schema_version") != 5 and model.get("profile") != profile:
         raise ValueError("report model profile does not match the run plan")
 
     template = load_template(template_file) if template_file else None
@@ -115,9 +128,21 @@ def finalize(
         raise ValueError(
             "template rendering requires identity display name and period title context"
         )
-    markdown = RENDER_REPORT.render(model, template, context)
+    hydrated_model = REPORT_HYDRATION.hydrate(
+        model,
+        ledger,
+        plan,
+        identity,
+        audit,
+    )
+    if hydrated_model.get("profile") != profile:
+        raise ValueError("hydrated report model profile does not match the run plan")
+    markdown = RENDER_REPORT.render(hydrated_model, template, context)
     validation = VALIDATE_REPORT.validate(markdown, profile, ledger, template)
-    model_validation = VALIDATE_REPORT.validate_model_coverage(model, ledger)
+    model_validation = VALIDATE_REPORT.validate_model_coverage(
+        hydrated_model,
+        ledger,
+    )
     validation["errors"].extend(model_validation["errors"])
     validation["ok"] = not validation["errors"]
     if not validation["ok"]:

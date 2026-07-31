@@ -12,6 +12,7 @@ from runtime_utils import (
     load_script,
     read_json,
     write_json_atomic,
+    write_json_compact_atomic,
 )
 from value_contracts import require_text
 
@@ -19,6 +20,9 @@ from value_contracts import require_text
 SCRIPT_DIR = Path(__file__).resolve().parent
 MANAGE_RUN = load_script(SCRIPT_DIR, "manage-run.py")
 RECONCILE = load_script(SCRIPT_DIR, "reconcile-evidence.py")
+SYNTHESIS_VIEW = load_script(SCRIPT_DIR, "prepare-synthesis-view.py")
+NORMALIZE_BODY = load_script(SCRIPT_DIR, "normalize-fetch-body.py")
+REPAIR_QUEUE = load_script(SCRIPT_DIR, "repair_queue.py")
 OUTCOMES = (
     "work",
     "uncertain",
@@ -55,23 +59,50 @@ def managed_relative_file(run_dir, value, label):
 
 def load_queue(run_dir):
     payload = read_json(run_dir / "fetch-queue.json", "fetch queue")
-    strict_fields(
-        payload,
-        {
-            "schema_version",
-            "fetch_queue",
-            "fetch_batches",
-            "fetch_waves",
-            "included_counts",
-            "deduplicated_count",
-        },
-        "fetch queue",
-    )
-    if payload.get("schema_version") != 1:
-        raise ValueError("fetch queue schema_version must be 1")
-    items = payload.get("fetch_queue")
-    if not isinstance(items, list):
-        raise ValueError("fetch queue requires a fetch_queue array")
+    schema_version = payload.get("schema_version") if isinstance(payload, dict) else None
+    if schema_version == 1:
+        strict_fields(
+            payload,
+            {
+                "schema_version",
+                "fetch_queue",
+                "fetch_batches",
+                "fetch_waves",
+                "included_counts",
+                "deduplicated_count",
+            },
+            "fetch queue",
+        )
+        items = payload.get("fetch_queue")
+        if not isinstance(items, list):
+            raise ValueError("fetch queue requires a fetch_queue array")
+    elif schema_version == 2:
+        strict_fields(
+            payload,
+            {
+                "schema_version",
+                "candidate_index",
+                "fetch_batches",
+                "fetch_waves",
+                "included_counts",
+                "deduplicated_count",
+            },
+            "fetch queue",
+        )
+        candidate_index = payload.get("candidate_index")
+        if not isinstance(candidate_index, dict):
+            raise ValueError("fetch queue requires a candidate_index object")
+        items = []
+        for global_id, item in candidate_index.items():
+            if not isinstance(item, dict):
+                raise ValueError(f"candidate_index[{global_id}] must be an object")
+            if "global_id" in item:
+                raise ValueError(
+                    f"candidate_index[{global_id}] must not duplicate global_id"
+                )
+            items.append({"global_id": global_id, **item})
+    else:
+        raise ValueError("fetch queue schema_version must be 1 or 2")
     queued = {}
     for index, item in enumerate(items):
         if not isinstance(item, dict):
@@ -103,16 +134,27 @@ def load_queue(run_dir):
         batch_id = require_text(batch.get("batch_id"), f"{label}.batch_id")
         if batch_id in batches:
             raise ValueError(f"fetch queue duplicates batch_id: {batch_id}")
-        items = batch.get("items")
-        if not isinstance(items, list) or not items:
-            raise ValueError(f"{label}.items must be a non-empty array")
+        if schema_version == 1:
+            batch_items = batch.get("items")
+            if not isinstance(batch_items, list) or not batch_items:
+                raise ValueError(f"{label}.items must be a non-empty array")
+            raw_ids = [
+                item.get("global_id") if isinstance(item, dict) else None
+                for item in batch_items
+            ]
+        else:
+            raw_ids = batch.get("global_ids")
+            if not isinstance(raw_ids, list) or not raw_ids:
+                raise ValueError(f"{label}.global_ids must be a non-empty array")
         ids = []
-        for item_index, item in enumerate(items):
-            if not isinstance(item, dict):
-                raise ValueError(f"{label}.items[{item_index}] must be an object")
+        for item_index, value in enumerate(raw_ids):
             global_id = require_text(
-                item.get("global_id"),
-                f"{label}.items[{item_index}].global_id",
+                value,
+                (
+                    f"{label}.items[{item_index}].global_id"
+                    if schema_version == 1
+                    else f"{label}.global_ids[{item_index}]"
+                ),
             )
             if global_id not in queued:
                 raise ValueError(f"{label} contains unknown global_id: {global_id}")
@@ -122,8 +164,26 @@ def load_queue(run_dir):
             ids.append(global_id)
         batches[batch_id] = {
             "global_ids": set(ids),
+            "request_file": (
+                managed_relative_file(
+                    run_dir,
+                    batch.get("request_file"),
+                    f"{label}.request_file",
+                )
+                if schema_version == 2
+                else None
+            ),
             "body_file": managed_relative_file(
                 run_dir, batch.get("body_file"), f"{label}.body_file"
+            ),
+            "semantic_file": (
+                managed_relative_file(
+                    run_dir,
+                    batch.get("semantic_file"),
+                    f"{label}.semantic_file",
+                )
+                if schema_version == 2
+                else None
             ),
             "evidence_file": managed_relative_file(
                 run_dir, batch.get("evidence_file"), f"{label}.evidence_file"
@@ -187,6 +247,29 @@ def load_results(run_dir, batches):
                 or body_path.stat().st_size == 0
             ):
                 raise ValueError(f"missing complete fetch body file for {batch_id}")
+            semantic_path = batch["semantic_file"]
+            if semantic_path is not None and (
+                semantic_path.is_symlink()
+                or not semantic_path.is_file()
+                or semantic_path.stat().st_size == 0
+            ):
+                raise ValueError(f"missing normalized fetch body file for {batch_id}")
+            if semantic_path is not None:
+                request_path = batch["request_file"]
+                if request_path.is_symlink() or not request_path.is_file():
+                    raise ValueError(f"missing fetch request file for {batch_id}")
+                expected_semantic = NORMALIZE_BODY.normalize(
+                    read_json(request_path, f"fetch request {batch_id}"),
+                    read_json(body_path, f"fetch body {batch_id}"),
+                )
+                actual_semantic = read_json(
+                    semantic_path,
+                    f"normalized fetch body {batch_id}",
+                )
+                if actual_semantic != expected_semantic:
+                    raise ValueError(
+                        f"normalized fetch body does not match raw body for {batch_id}"
+                    )
             path = batch["evidence_file"]
             expected_evidence_paths.add(path)
             if path.is_symlink() or not path.is_file():
@@ -292,13 +375,19 @@ def compile_run(run_dir):
     period = plan.get("period") if isinstance(plan, dict) else None
     if not isinstance(period, dict):
         raise ValueError("run plan requires a period object")
-    snapshot = require_text(period.get("snapshot"), "run plan period.snapshot")
+    snapshot = require_text(
+        period.get("snapshot")
+        or period.get("snapshot_time")
+        or period.get("end"),
+        "run plan period.snapshot",
+    )
     records_payload = {
         "schema_version": 1,
         "snapshot": snapshot,
         "records": records,
     }
     ledger = RECONCILE.reconcile(records_payload)
+    synthesis_view = SYNTHESIS_VIEW.prepare(ledger)
     audit = {
         "schema_version": 1,
         "total_count": len(queued),
@@ -308,10 +397,18 @@ def compile_run(run_dir):
     }
     write_json_atomic(run_dir / "evidence-records.json", records_payload)
     write_json_atomic(run_dir / "ledger.json", ledger)
+    write_json_compact_atomic(
+        run_dir / "synthesis-view.json",
+        synthesis_view,
+    )
     write_json_atomic(run_dir / "extraction-audit.json", audit)
+    repair_file = run_dir / "repair-queue.json"
+    if repair_file.is_file() or repair_file.is_symlink():
+        repair_file.unlink()
     return {
         "records_file": str(run_dir / "evidence-records.json"),
         "ledger_file": str(run_dir / "ledger.json"),
+        "synthesis_file": str(run_dir / "synthesis-view.json"),
         "audit_file": str(run_dir / "extraction-audit.json"),
         "processed_count": len(seen),
         "work_count": len(ledger["work"]),
@@ -324,11 +421,29 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-dir", required=True)
     args = parser.parse_args()
+    run_dir = None
     try:
         run_dir = MANAGE_RUN.checked_run_dir(args.run_dir)
         result = compile_run(run_dir)
     except (OSError, ValueError) as exc:
-        emit_json({"error": str(exc)}, sys.stderr)
+        payload = {
+            "error": "evidence_compilation_failed",
+            "detail": " ".join(str(exc).split())[:240],
+        }
+        if run_dir is not None:
+            try:
+                repair = REPAIR_QUEUE.build(run_dir, failure=str(exc))
+                repair_file = run_dir / "repair-queue.json"
+                write_json_compact_atomic(repair_file, repair)
+                payload.update(
+                    {
+                        "repair_file": str(repair_file),
+                        "repair_count": len(repair["candidate_index"]),
+                    }
+                )
+            except (OSError, ValueError):
+                pass
+        emit_json(payload, sys.stderr)
         return 2
     emit_json(result)
     return 0

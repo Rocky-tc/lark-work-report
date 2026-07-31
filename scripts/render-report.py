@@ -163,7 +163,7 @@ def markdown_text(value, label):
     return text
 
 
-def source_links(item, label, link_label, *, required=True):
+def source_values(item, label, *, required=True):
     values = []
     source_ref = item.get("source_ref")
     if source_ref is not None:
@@ -181,7 +181,63 @@ def source_links(item, label, link_label, *, required=True):
             raise ValueError(
                 f"{label}.source_refs must use http(s):// or source://"
             )
-    return "".join(f"[{link_label}]({value})" for value in values)
+    return values
+
+
+class SourceRegistry:
+    """Keep repeated URLs out of narrative lines without hiding any source."""
+
+    SECTION_KINDS = (
+        ("summary", "work"),
+        ("workstreams", "work"),
+        ("risks", "work"),
+        ("next_actions", "work"),
+        ("uncertain", "uncertain"),
+    )
+
+    def __init__(self, payload):
+        occurrences = {}
+        ordered = []
+        for section, kind in self.SECTION_KINDS:
+            for index, item in enumerate(ordered_items(payload.get(section), section)):
+                for value in source_values(
+                    item,
+                    f"{section}[{index}]",
+                    required=False,
+                ):
+                    key = (kind, value)
+                    if key not in occurrences:
+                        occurrences[key] = 0
+                        ordered.append(key)
+                    occurrences[key] += 1
+
+        counters = {"work": 0, "uncertain": 0}
+        self.labels = {}
+        self.ordered = []
+        for key in ordered:
+            if occurrences[key] < 2:
+                continue
+            kind, value = key
+            counters[kind] += 1
+            prefix = "W" if kind == "work" else "U"
+            label = f"{prefix}{counters[kind]}"
+            self.labels[key] = label
+            self.ordered.append((label, value))
+
+    def links(self, item, label, kind, *, required=True):
+        link_label = "工作来源" if kind == "work" else "待复核来源"
+        rendered = []
+        for value in source_values(item, label, required=required):
+            short = self.labels.get((kind, value))
+            rendered.append(
+                f"[{short}][{short}]"
+                if short
+                else f"[{link_label}]({value})"
+            )
+        return "".join(rendered)
+
+    def definitions(self):
+        return [f"[{label}]: {value}" for label, value in self.ordered]
 
 
 def priority(item, label):
@@ -222,19 +278,47 @@ def format_items(items, style):
     raise ValueError(f"unsupported item style: {style}")
 
 
-def render_summary(items, style="bullet", labels=None):
+def fact_key(value):
+    return " ".join(value.split()) if isinstance(value, str) else None
+
+
+def detailed_fact_keys(payload):
+    fields = {
+        "workstreams": ("result", "impact", "decision", "progress"),
+        "risks": ("risk", "impact", "assistance"),
+        "next_actions": ("action", "purpose"),
+    }
+    return {
+        key
+        for section, names in fields.items()
+        for item in payload.get(section, [])
+        if isinstance(item, dict)
+        for name in names
+        for key in (fact_key(item.get(name)),)
+        if key
+    }
+
+
+def render_summary(
+    items,
+    style="bullet",
+    labels=None,
+    sources=None,
+    detailed_facts=None,
+):
     contents = []
     labels = labels or resolved_field_labels(None)
+    detailed_facts = detailed_facts or set()
     for index, item in enumerate(ordered_items(items, "summary")):
         result = markdown_text(item.get("result"), f"summary[{index}].result")
         impact = optional_text(item, "impact", f"summary[{index}]")
         decision = optional_text(item, "decision", f"summary[{index}]")
         parts = [result]
-        if impact:
+        if impact and fact_key(impact) not in detailed_facts:
             parts.append(
                 f"{labels['impact']}：{markdown_text(impact, 'summary impact')}"
             )
-        if decision:
+        if decision and fact_key(decision) not in detailed_facts:
             parts.append(
                 f"{labels['decision']}：{markdown_text(decision, 'summary decision')}"
             )
@@ -243,10 +327,10 @@ def render_summary(items, style="bullet", labels=None):
             parts.append(
                 f"排序依据：{markdown_text(priority_basis, 'summary priority basis')}"
             )
-        link = source_links(
+        link = sources.links(
             item,
             f"summary[{index}]",
-            "工作来源",
+            "work",
         )
         contents.append(f"{sentence(parts)}{link}")
     return format_items(contents, style)
@@ -257,6 +341,7 @@ def render_workstreams(
     style="bullet",
     labels=None,
     layout="inline",
+    sources=None,
 ):
     contents = []
     labels = labels or resolved_field_labels(None)
@@ -297,10 +382,10 @@ def render_workstreams(
                 "排序依据："
                 f"{markdown_text(priority_basis, 'workstream priority basis')}"
             )
-        link = source_links(
+        link = sources.links(
             item,
             f"workstreams[{index}]",
-            "工作来源",
+            "work",
         )
         heading = f"{name}｜{STATUS_LABELS[status]}"
         if layout == "inline":
@@ -316,7 +401,7 @@ def render_workstreams(
     return format_items(contents, style)
 
 
-def render_risks(items, style="bullet", labels=None):
+def render_risks(items, style="bullet", labels=None, sources=None):
     contents = []
     labels = labels or resolved_field_labels(None)
     for index, item in enumerate(ordered_items(items, "risks")):
@@ -338,16 +423,16 @@ def render_risks(items, style="bullet", labels=None):
             parts.append(
                 f"排序依据：{markdown_text(priority_basis, 'risk priority basis')}"
             )
-        link = source_links(
+        link = sources.links(
             item,
             f"risks[{index}]",
-            "工作来源",
+            "work",
         )
         contents.append(f"{sentence(parts)}{link}")
     return format_items(contents, style)
 
 
-def render_next_actions(items, style="bullet", labels=None):
+def render_next_actions(items, style="bullet", labels=None, sources=None):
     contents = []
     labels = labels or resolved_field_labels(None)
     for index, item in enumerate(ordered_items(items, "next_actions")):
@@ -436,17 +521,17 @@ def render_next_actions(items, style="bullet", labels=None):
                 "assignee_relation",
             )
         )
-        link = source_links(
+        link = sources.links(
             item,
             f"next_actions[{index}]",
-            "工作来源",
+            "work",
             required=factual,
         )
         contents.append(f"{sentence(parts)}{link}")
     return format_items(contents, style)
 
 
-def render_uncertain(items, style="bullet", labels=None):
+def render_uncertain(items, style="bullet", labels=None, sources=None):
     contents = []
     labels = labels or resolved_field_labels(None)
     for index, item in enumerate(ordered_items(items, "uncertain")):
@@ -455,10 +540,10 @@ def render_uncertain(items, style="bullet", labels=None):
             f"uncertain[{index}].description",
         )
         reason = markdown_text(item.get("reason"), f"uncertain[{index}].reason")
-        link = source_links(
+        link = sources.links(
             item,
             f"uncertain[{index}]",
-            "待复核来源",
+            "uncertain",
         )
         priority_basis = optional_text(
             item,
@@ -475,7 +560,7 @@ def render_uncertain(items, style="bullet", labels=None):
     return format_items(contents, style)
 
 
-def render_coverage(value):
+def render_coverage(value, source_definitions=None):
     coverage = require_object(value, "coverage")
     reject_unknown_fields(coverage, COVERAGE_FIELDS, "coverage")
     start_text, start = parse_time(coverage.get("start"), "coverage.start")
@@ -510,13 +595,17 @@ def render_coverage(value):
         if not isinstance(value, int) or isinstance(value, bool) or value < 0:
             raise ValueError(f"{label} must be a non-negative integer")
 
-    return [
-        f"- 时间窗：{start_text} 至 {end_text}",
-        f"- 快照时间：{snapshot_text}",
-        f"- 覆盖域：{'、'.join(domains) if domains else '无'}",
-        f"- 权限缺口：{'；'.join(gaps) if gaps else '无'}",
-        f"- 分类计数：work={work_count}，uncertain={uncertain_count}",
+    lines = [
+        f"- 范围：{start_text} 至 {end_text}"
+        f"｜快照：{snapshot_text}"
+        f"｜覆盖：{'、'.join(domains) if domains else '无'}"
+        f"｜缺口：{'；'.join(gaps) if gaps else '无'}"
+        f"｜计数：work={work_count}，uncertain={uncertain_count}"
     ]
+    definitions = source_definitions or []
+    if definitions:
+        lines.extend(["", *definitions])
+    return lines
 
 
 def render(payload, template=None, context=None):
@@ -536,30 +625,36 @@ def render(payload, template=None, context=None):
     styles = [setting["item_style"] for setting in settings]
     labels = resolved_field_labels(template)
     layout = resolved_workstream_layout(template)
+    sources = SourceRegistry(payload)
     bodies = (
         render_summary(
             payload.get("summary"),
             styles[0],
             labels,
+            sources,
+            detailed_fact_keys(payload),
         ),
         render_workstreams(
             payload.get("workstreams"),
             styles[1],
             labels,
             layout,
+            sources,
         ),
-        render_risks(payload.get("risks"), styles[2], labels),
+        render_risks(payload.get("risks"), styles[2], labels, sources),
         render_next_actions(
             payload.get("next_actions"),
             styles[3],
             labels,
+            sources,
         ),
         render_uncertain(
             payload.get("uncertain"),
             styles[4],
             labels,
+            sources,
         ),
-        render_coverage(payload.get("coverage")),
+        render_coverage(payload.get("coverage"), sources.definitions()),
     )
     blocks = [f"# {title}"]
     for heading, lines in zip(sections, bodies):

@@ -2,7 +2,7 @@
 
 ## 第一层：元数据候选与抓取队列
 
-候选字段以 [capability-adapters.md](capability-adapters.md) 为准，只允许元数据，不得包含正文或逐字稿。`prepare-fetch-queue.py` 只保留 `work` 与 `uncertain`，生成全局稳定 ID，并按 `source_ref` 跨域去重；重复来源的其他稳定 ID 记入 `alternate_ids`。私人、闲聊及其分类计数不得进入队列文件或终端摘要。
+候选字段以 [capability-adapters.md](capability-adapters.md) 为准，只允许元数据，不得包含正文或逐字稿。`prepare-fetch-queue.py` 只保留 `work` 与 `uncertain`，生成全局稳定 ID，并按 `source_ref` 跨域去重；重复来源的其他稳定 ID 记入 `alternate_ids`。队列以 `candidate_index` 单点保存候选元数据，批次只引用 `global_ids`；执行时逐批读取生成的请求文件。私人、闲聊及其分类计数不得进入队列文件或终端摘要。
 
 ## 第二层：正文核验记录
 
@@ -82,11 +82,11 @@ python3 scripts/compile-evidence.py --run-dir <run-dir>
 
 待复核账本不能被分析器用于生成成果、结果、完成状态、决策或影响。
 
-最终校验时，工作章节使用的每个 `[工作来源]` 必须能在工作账本中找到完全相同的 `source_ref`；`[待复核来源]` 同理。仅构造一个格式正确但账本中不存在的链接不能通过校验。
+最终校验时，工作章节使用的每个行内 `[工作来源]` 或 `Wn` 短引用必须能在工作账本中找到完全相同的 `source_ref`；`[待复核来源]` 与 `Un` 同理。仅构造格式正确但账本中不存在的链接或短引用不能通过校验。
 
 ## 报告模型
 
-双账本核验完成后，完整读取两个账本建立临时结构化报告模型 v3。每个报告条目用 `evidence_ids` 引用账本的 `cluster_id`，且每个账本聚合项至少被一个相同类型的报告条目覆盖。报告模型只负责信息排序和六段式渲染，不是新的证据层，也不得新增账本中不存在的事实。完整字段契约见 [report-rendering.md](report-rendering.md)。
+双账本核验完成后，`stage-io` 生成不含机器长标识和来源链接的综合包。Agent 用 `wN` / `uN` 短引用建立临时报告模型 v5；接口再把它们展开为账本 `cluster_id`。每个账本聚合项至少被一个相同类型的报告条目覆盖。模型只写叙事字段；主体、周期、覆盖信息、来源、排序依据和行动事实由接口从受管状态回填。报告模型不是新的证据层，也不得新增账本中不存在的事实。完整字段契约见 [report-rendering.md](report-rendering.md)。
 
 ## 去重
 

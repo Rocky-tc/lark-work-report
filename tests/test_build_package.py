@@ -52,6 +52,38 @@ class BuildPackageTests(unittest.TestCase):
                 names,
             )
             self.assertIn(
+                "lark-work-report/scripts/prepare-synthesis-view.py",
+                names,
+            )
+            self.assertIn(
+                "lark-work-report/scripts/normalize-fetch-body.py",
+                names,
+            )
+            self.assertIn(
+                "lark-work-report/scripts/prepare-repair-queue.py",
+                names,
+            )
+            self.assertIn(
+                "lark-work-report/scripts/repair_queue.py",
+                names,
+            )
+            self.assertIn(
+                "lark-work-report/scripts/report_hydration.py",
+                names,
+            )
+            self.assertIn(
+                "lark-work-report/scripts/stage-io.py",
+                names,
+            )
+            self.assertIn(
+                "lark-work-report/scripts/stage_io.py",
+                names,
+            )
+            self.assertIn(
+                "lark-work-report/references/stage-io.md",
+                names,
+            )
+            self.assertIn(
                 "lark-work-report/scripts/value_contracts.py",
                 names,
             )

@@ -15,6 +15,11 @@ from value_contracts import parse_aware_datetime as parse_time_contract
 
 WORK_SOURCE_LINK = re.compile(rf"\[工作来源\]\(({SOURCE_TARGET})\)")
 UNCERTAIN_SOURCE_LINK = re.compile(rf"\[待复核来源\]\(({SOURCE_TARGET})\)")
+SOURCE_DEFINITION = re.compile(
+    rf"^\[((?:W|U)\d+)\]:\s*({SOURCE_TARGET})\s*$",
+    re.MULTILINE,
+)
+SOURCE_MARKER = re.compile(r"\[((?:W|U)\d+)\]\[\1\]")
 EMPTY_ITEM = re.compile(r"^(?:-\s*)?(无|暂无|未发现|证据不足)(?:[。；;.]|$)")
 CLASSIFICATION_COUNTS = re.compile(
     r"^-\s*分类计数[：:]\s*work=(\d+)[，,\s]+uncertain=(\d+)\s*$",
@@ -22,6 +27,14 @@ CLASSIFICATION_COUNTS = re.compile(
 )
 TIME_WINDOW = re.compile(r"^-\s*时间窗[：:]\s*(\S+)\s+至\s+(\S+)\s*$", re.MULTILINE)
 SNAPSHOT_TIME = re.compile(r"^-\s*快照时间[：:]\s*(\S+)\s*$", re.MULTILINE)
+COMPACT_COVERAGE = re.compile(
+    r"^-\s*范围[：:]\s*(\S+)\s+至\s+(\S+)"
+    r"｜快照[：:]\s*(\S+)"
+    r"｜覆盖[：:]\s*(.+?)"
+    r"｜缺口[：:]\s*(.+?)"
+    r"｜计数[：:]\s*work=(\d+)[，,]\s*uncertain=(\d+)\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
 FORBIDDEN_CLASS = re.compile(
     r"\b(?:private|chatter)\b|私人材料|私人标题|私人摘要|闲聊材料|闲聊标题|闲聊摘要",
     re.IGNORECASE,
@@ -53,6 +66,24 @@ def parse_aware_datetime(value, label, errors):
 
 
 def validate_coverage(coverage, errors):
+    compact = COMPACT_COVERAGE.search(coverage)
+    if compact:
+        start = parse_aware_datetime(compact.group(1), "时间窗起点", errors)
+        end = parse_aware_datetime(compact.group(2), "时间窗终点", errors)
+        snapshot_time = parse_aware_datetime(
+            compact.group(3),
+            "快照时间",
+            errors,
+        )
+        if start and end and start >= end:
+            errors.append("时间窗起点必须早于终点")
+        if end and snapshot_time and end > snapshot_time:
+            errors.append("时间窗终点不得晚于快照时间")
+        return {
+            "work": int(compact.group(6)),
+            "uncertain": int(compact.group(7)),
+        }
+
     for label in ("覆盖域", "权限缺口"):
         if not re.search(rf"^-\s*{label}[：:]\s*\S+", coverage, re.MULTILINE):
             errors.append(f"覆盖说明缺少：{label}")
@@ -80,6 +111,42 @@ def validate_coverage(coverage, errors):
         errors.append("覆盖说明缺少 work/uncertain 两类聚合计数")
         return None
     return {"work": int(counts.group(1)), "uncertain": int(counts.group(2))}
+
+
+def parse_source_registry(markdown, errors):
+    definitions = {}
+    targets = {}
+    for label, source_ref in SOURCE_DEFINITION.findall(markdown):
+        if label in definitions:
+            errors.append(f"来源短引用重复定义：{label}")
+            continue
+        if source_ref in targets:
+            errors.append(
+                f"同一来源不能使用多个短引用：{targets[source_ref]}、{label}"
+            )
+            continue
+        definitions[label] = source_ref
+        targets[source_ref] = label
+    markers = set(SOURCE_MARKER.findall(markdown))
+    for label in sorted(markers - set(definitions)):
+        errors.append(f"未定义的来源短引用：{label}")
+    for label in sorted(set(definitions) - markers):
+        errors.append(f"来源短引用未被使用：{label}")
+    return definitions, markers
+
+
+def line_has_typed_source(line, kind, definitions):
+    direct = (
+        WORK_SOURCE_LINK.search(line)
+        if kind == "work"
+        else UNCERTAIN_SOURCE_LINK.search(line)
+    )
+    prefix = "W" if kind == "work" else "U"
+    referenced = any(
+        label.startswith(prefix) and label in definitions
+        for label in SOURCE_MARKER.findall(line)
+    )
+    return bool(direct or referenced)
 
 
 def validate_ledger(ledger, coverage_counts, errors):
@@ -135,12 +202,12 @@ def validate_ledger(ledger, coverage_counts, errors):
 
 def validate_model_coverage(model, ledger):
     errors = []
-    if not isinstance(model, dict) or model.get("schema_version") != 3:
+    if not isinstance(model, dict) or model.get("schema_version") not in {3, 4}:
         return {"ok": True, "errors": []}
     if not isinstance(ledger, dict) or ledger.get("schema_version") != 2:
         return {
             "ok": False,
-            "errors": ["报告模型 v3 要求证据账本 schema_version=2"],
+            "errors": ["报告模型 v3/v4 要求证据账本 schema_version=2"],
         }
 
     ledger_ids = {"work": set(), "uncertain": set()}
@@ -230,6 +297,7 @@ def validate(markdown, profile, ledger, template=None):
     required = tuple(setting["label"] for setting in settings)
     evidence_sections = set(required[:3])
     reason_label = field_labels(template)["reason"]
+    source_definitions, source_markers = parse_source_registry(markdown, errors)
 
     if not re.search(r"^#\s+\S+", markdown, re.MULTILINE):
         errors.append("缺少一级标题")
@@ -253,7 +321,7 @@ def validate(markdown, profile, ledger, template=None):
             line = raw_line.strip()
             if not line or line.startswith(("###", "```", "|")) or EMPTY_ITEM.match(line):
                 continue
-            if not WORK_SOURCE_LINK.search(line):
+            if not line_has_typed_source(line, "work", source_definitions):
                 errors.append(f"章节“{name}”的事实条目缺少工作来源锚：{line}")
 
     uncertain_name = required[4]
@@ -263,7 +331,7 @@ def validate(markdown, profile, ledger, template=None):
             continue
         if reason_label not in line:
             errors.append(f"章节“{uncertain_name}”的候选缺少待复核原因：{line}")
-        if not UNCERTAIN_SOURCE_LINK.search(line):
+        if not line_has_typed_source(line, "uncertain", source_definitions):
             errors.append(f"章节“{uncertain_name}”的候选缺少待复核来源锚：{line}")
 
     coverage_name = required[-1]
@@ -271,6 +339,16 @@ def validate(markdown, profile, ledger, template=None):
     coverage_counts = validate_coverage(coverage, errors)
     work_sources = set(WORK_SOURCE_LINK.findall(markdown))
     uncertain_sources = set(UNCERTAIN_SOURCE_LINK.findall(markdown))
+    work_sources.update(
+        source_definitions[label]
+        for label in source_markers
+        if label.startswith("W") and label in source_definitions
+    )
+    uncertain_sources.update(
+        source_definitions[label]
+        for label in source_markers
+        if label.startswith("U") and label in source_definitions
+    )
     for source_ref in sorted(work_sources | uncertain_sources):
         if not is_valid_source_ref(source_ref):
             errors.append(f"报告包含无效来源锚：{source_ref}")
@@ -286,6 +364,7 @@ def validate(markdown, profile, ledger, template=None):
             errors.append("分类计数为 uncertain=0，但报告包含待复核来源锚")
 
     visible_text = re.sub(r"\]\([^)]+\)", "]", markdown)
+    visible_text = SOURCE_DEFINITION.sub("", visible_text)
     if FORBIDDEN_CLASS.search(visible_text):
         errors.append("报告只能出现 work 和 uncertain 两类内容")
 

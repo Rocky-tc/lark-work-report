@@ -92,16 +92,29 @@ class PortabilityTests(unittest.TestCase):
         skill = (ROOT / "SKILL.md").read_text(encoding="utf-8")
         for name in (
             "capability-adapters.md",
+            "classification-contract.md",
             "collection-policy.md",
+            "extraction-contract.md",
             "relevance-and-retention.md",
             "evidence-model.md",
             "report-profiles.md",
             "report-rendering.md",
+            "stage-io.md",
+            "synthesis-contract.md",
             "output-contract.md",
             "template-profiles.md",
         ):
             self.assertIn(f"references/{name}", skill)
         self.assertFalse((ROOT / "references" / "runtime-contract.md").exists())
+
+    def test_semantic_contracts_are_loaded_at_their_own_stages(self):
+        skill = (ROOT / "SKILL.md").read_text(encoding="utf-8")
+        classification = skill.index("references/classification-contract.md")
+        extraction = skill.index("references/extraction-contract.md")
+        synthesis = skill.index("references/synthesis-contract.md")
+        self.assertLess(classification, extraction)
+        self.assertLess(extraction, synthesis)
+        self.assertIn("不能提前合并加载", skill)
 
 
 if __name__ == "__main__":

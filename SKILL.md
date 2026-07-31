@@ -21,8 +21,6 @@ description: Use when 用户要通过任意可用的飞书连接器、MCP、CLI 
 
 ## 执行
 
-执行正文分类前必须完整读取 [relevance-and-retention.md](references/relevance-and-retention.md) 与 [evidence-model.md](references/evidence-model.md)。它们定义工作相关性、隐私边界、证据字段和状态语义，不能为节省 token 省略。其他参考文件按下文条件加载。
-
 1. **准备运行。** 把可用适配器 manifest 写入 `{"adapters":[...]}`，执行：
 
    ```bash
@@ -37,7 +35,7 @@ description: Use when 用户要通过任意可用的飞书连接器、MCP、CLI 
 
 2. **确认身份、模板并列举元数据。** 读取 `run-plan.json`。按计划执行 `identity_call` 和可选 `template_call`，分别写入 `identity.json` 与经过校验的 `template-profile.json`。执行每个 `metadata_wave` 前用 `record-batch` 原子预留调用；同波并行、跨波顺序执行。规划器已经按收益与适配器覆盖关系消除重复查询。候选只含元数据，写入 `<run-dir>/candidates.json`。
 
-3. **过滤、去重并抓正文。**
+3. **过滤、去重并进入阶段接口。** 分类前完整读取本阶段唯一必读的 [classification-contract.md](references/classification-contract.md)。
 
    ```bash
    python3 scripts/prepare-fetch-queue.py \
@@ -46,25 +44,27 @@ description: Use when 用户要通过任意可用的飞书连接器、MCP、CLI 
      --output <run-dir>/fetch-queue.json
    ```
 
-   命令按精确 `source_ref` 跨域去重，生成带文件落点的 `fetch_batches` 和受适配器并发上限约束的 `fetch_waves`。执行每个波次前用 `record-batch` 原子预留；只在适配器明确声明安全时并行。每个入队候选必须完整读取正文；长材料可完整分块处理，但不得只看摘要或片段。适配器支持文件输出时直接写入批次指定的 `body_file`，否则立即把完整返回写入该文件，终端只保留路径和计数。
-
-4. **核验完整性、归并证据并建立报告模型。** 对每个批次的完整正文做一次语义提取，把逐项结果写入指定 `evidence_file`：工作或待复核带证据记录；正文确认的私人/闲聊只写丢弃结果；无权限写访问缺口。然后执行：
+   命令按精确 `source_ref` 跨域去重，以单一索引保存完整机器元数据。此后完整读取 [stage-io.md](references/stage-io.md)，并反复执行：
 
    ```bash
-   python3 scripts/compile-evidence.py --run-dir <run-dir>
+   python3 scripts/stage-io.py next --run-dir <run-dir>
    ```
 
-   编译器要求抓取队列中的每个候选恰好有一个结果；缺失、重复、身份不匹配或非法字段都会停止，验证通过后才生成 `evidence-records.json`、`ledger.json` 和不含私人/闲聊详情的 `extraction-audit.json`。归并器在两个账本内完成谨慎聚类、状态裁决、多来源保留和重要性排序。再完整读取账本建立报告模型 v3：每个报告条目用 `evidence_ids` 指向账本聚合项，且每个工作与待复核聚合项都必须被报告模型覆盖。
-
-5. **一次定稿。**
+   只读取返回的 `packet_file`，按其中的 `stage` 处理，再把严格结果写入 `<run-dir>` 内的临时 JSON 并提交：
 
    ```bash
-   python3 scripts/finalize-run.py --run-dir <run-dir>
+   python3 scripts/stage-io.py commit \
+     --run-dir <run-dir> \
+     --result-file <stage-result.json>
    ```
 
-   定稿器在内存中渲染并与账本交叉校验，验证通过才原子写入 `report.md`。不得绕过定稿器自由拼装最终报告。
+   `fetch` 前按包内批次数用 `record-batch` 预留外部调用，完整抓取每项正文；`extract` 时读取本阶段唯一必读的 [extraction-contract.md](references/extraction-contract.md)；`synthesize` 时读取本阶段唯一必读的 [synthesis-contract.md](references/synthesis-contract.md)。不要把三个契约同时加载。
 
-6. **交付并清理。** 创建文档后必须回读标题、章节、来源和覆盖说明；创建与回读分别计一次外部调用。交付成功后执行：
+   每次 `commit` 都回传下一阶段；直到 `stage=complete`。接口只向 Agent 暴露本阶段必要数据和 `i0`、`c0`、`w0`、`u0` 等短引用，私有回执负责展开稳定 ID、来源和文件路径，并用输入摘要拒绝陈旧结果。正文无损规范化、证据完整性编译、双账本归并、标题与覆盖信息回填、报告渲染和验证均由接口确定性执行。缺失、重复、错分区、身份重复、未知字段、非法短引用或中途输入变化都会停止。
+
+4. **必要时增量修复。** 如果阶段接口返回编译错误，使用生成的 `repair-queue.json` 只重抓或重提取受影响项；不得重新处理已验证项。底层排错时才直接使用 `normalize-fetch-body.py`、`compile-evidence.py` 或 `finalize-run.py`。
+
+5. **交付并清理。** `complete` 返回的 `report_file` 已通过账本校验。创建文档后必须回读标题、章节、来源和覆盖说明；创建与回读分别计一次外部调用。交付成功后执行：
 
    ```bash
    python3 scripts/manage-run.py cleanup --run-dir <run-dir>
@@ -74,7 +74,9 @@ description: Use when 用户要通过任意可用的飞书连接器、MCP、CLI 
 
 - 固定六段语义：摘要、进展与结果、风险、下一周期重点、待复核、来源与覆盖；有效模板可改变标题、显示名称、分组、列表/段落、字段标签和文风。
 - 条目按 `priority` 排序；同一条按结果、影响、决策、进展排序；空章节只写 `- 无`。
-- 报告模型 v3 继承多来源、排序依据、行动类型、截止时间、待回复状态和责任关系，并强制声明 `evidence_ids`；这些字段只能来自对应账本。
+- 报告模型 v5 只写叙事字段、账本指纹和 `wN` / `uN` 短引用；阶段接口回填真实证据 ID、主体、标题、周期、覆盖信息、多来源、排序依据和行动事实。v1–v4 继续兼容。
+- 同一来源出现两次以上时，定稿器改用 `W1` / `U1` 并在文末只保留一次完整 URL；单次来源仍使用行内链接。
+- 摘要中的可选影响或决策若已在详细章节逐字出现，只展示一次；摘要核心结果不省略。覆盖范围、快照、覆盖域、缺口和计数合并为一行。
 - 关键事实、数字、状态、结果和决策必须有来源锚。
 - 报告只出现 `work` 与 `uncertain`；证据不足时输出短报告和覆盖缺口，不虚构。
 
@@ -87,14 +89,17 @@ description: Use when 用户要通过任意可用的飞书连接器、MCP、CLI 
 
 ## 按需参考
 
-除上述两份必读语义契约外，仅在命中条件时完整读取：
+三个阶段契约分别在进入对应阶段时读取，不能提前合并加载。其余文件仅在命中条件时完整读取：
 
 | 条件 | 文件 |
 |---|---|
 | manifest 缺失、校验失败或新增宿主 | [capability-adapters.md](references/capability-adapters.md) |
 | 深度模式、分页、预算、缓存或覆盖取舍 | [collection-policy.md](references/collection-policy.md) |
+| 分类边界、保留模式或清理规则需要解释 | [relevance-and-retention.md](references/relevance-and-retention.md) |
+| 证据字段、冲突裁决或聚类失败 | [evidence-model.md](references/evidence-model.md) |
 | 用户改变格式、比较口径或周期粒度 | [report-profiles.md](references/report-profiles.md) |
 | 用户提供旧报告/模板、改变或重置个人格式 | [template-profiles.md](references/template-profiles.md) |
+| 阶段包、短引用或结果提交被拒绝 | [stage-io.md](references/stage-io.md) |
 | 报告模型被定稿器拒绝 | [report-rendering.md](references/report-rendering.md) |
 | 文档创建、回读或验收失败 | [output-contract.md](references/output-contract.md) |
 

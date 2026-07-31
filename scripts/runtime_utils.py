@@ -34,6 +34,17 @@ def write_json_atomic(path, payload):
     pending.replace(path)
 
 
+def write_json_compact_atomic(path, payload):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pending = path.with_name(f".{path.name}.next")
+    pending.write_text(
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    pending.replace(path)
+
+
 def write_text_atomic(path, value):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)

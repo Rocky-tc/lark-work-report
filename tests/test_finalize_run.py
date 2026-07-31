@@ -179,10 +179,8 @@ class FinalizeRunTests(unittest.TestCase):
         markdown = (self.run_dir / "report.md").read_text(encoding="utf-8")
         self.assertIn("行动类型：回复", markdown)
         self.assertIn("需要回复：是", markdown)
-        self.assertIn(
-            "[工作来源](https://example.com/comment/1)",
-            markdown,
-        )
+        self.assertIn("[W1][W1]", markdown)
+        self.assertIn("[W1]: https://example.com/comment/1", markdown)
 
     def test_v3_requires_and_accepts_complete_ledger_coverage(self):
         model = report_model()
@@ -208,6 +206,101 @@ class FinalizeRunTests(unittest.TestCase):
         )
         result = run(FINALIZER, "--run-dir", str(self.run_dir))
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_v4_hydrates_sources_priority_and_action_facts_from_ledger(self):
+        model = report_model()
+        model["schema_version"] = 4
+        model["summary"][0] = {
+            "result": "完成报告优化",
+            "evidence_ids": ["cluster-work-1"],
+        }
+        model["next_actions"] = [
+            {
+                "action": "回复评审意见",
+                "evidence_ids": ["cluster-work-1"],
+            }
+        ]
+        ledger = {
+            "schema_version": 2,
+            "work": [
+                {
+                    "cluster_id": "cluster-work-1",
+                    "source_ref": "https://example.com/work/1",
+                    "source_refs": [
+                        "https://example.com/work/1",
+                        "https://example.com/comment/1",
+                    ],
+                    "priority": 7,
+                    "priority_basis": ["当前主体责任明确", "两天内到期"],
+                    "action_kind": "reply",
+                    "due_at": "2026-07-28T12:00:00+08:00",
+                    "requires_response": True,
+                    "assignee_relation": "self",
+                }
+            ],
+            "uncertain": [],
+        }
+        (self.run_dir / "report-model.json").write_text(
+            json.dumps(model, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        (self.run_dir / "ledger.json").write_text(
+            json.dumps(ledger, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        result = run(FINALIZER, "--run-dir", str(self.run_dir))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        markdown = (self.run_dir / "report.md").read_text(encoding="utf-8")
+        self.assertIn("[W2][W2]", markdown)
+        self.assertIn("[W2]: https://example.com/comment/1", markdown)
+        self.assertIn("行动类型：回复", markdown)
+        self.assertIn("截止时间：2026-07-28T12:00:00+08:00", markdown)
+        self.assertIn("需要回复：是", markdown)
+        self.assertIn("排序依据：当前主体责任明确、两天内到期", markdown)
+
+    def test_v4_omits_conflicting_action_fact_instead_of_guessing(self):
+        model = report_model()
+        model["schema_version"] = 4
+        model["summary"] = []
+        model["next_actions"] = [
+            {
+                "action": "确认最终截止时间",
+                "evidence_ids": ["cluster-work-1", "cluster-work-2"],
+            }
+        ]
+        model["coverage"]["work_count"] = 2
+        ledger = {
+            "schema_version": 2,
+            "work": [
+                {
+                    "cluster_id": "cluster-work-1",
+                    "source_ref": "https://example.com/work/1",
+                    "source_refs": ["https://example.com/work/1"],
+                    "priority": 10,
+                    "due_at": "2026-07-28T12:00:00+08:00",
+                },
+                {
+                    "cluster_id": "cluster-work-2",
+                    "source_ref": "https://example.com/work/2",
+                    "source_refs": ["https://example.com/work/2"],
+                    "priority": 20,
+                    "due_at": "2026-07-29T12:00:00+08:00",
+                },
+            ],
+            "uncertain": [],
+        }
+        (self.run_dir / "report-model.json").write_text(
+            json.dumps(model, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        (self.run_dir / "ledger.json").write_text(
+            json.dumps(ledger, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        result = run(FINALIZER, "--run-dir", str(self.run_dir))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        markdown = (self.run_dir / "report.md").read_text(encoding="utf-8")
+        self.assertNotIn("截止时间：", markdown)
 
     def test_v3_fails_when_any_ledger_cluster_is_omitted(self):
         model = report_model()

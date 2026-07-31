@@ -13,7 +13,11 @@ from contracts import (
     SOURCE_RANK,
     SOURCE_TYPES,
 )
-from runtime_utils import emit_json, read_json, write_json_atomic
+from runtime_utils import (
+    emit_json,
+    read_json,
+    write_json_compact_atomic,
+)
 from source_refs import is_valid_source_ref
 from value_contracts import parse_aware_datetime, require_text
 
@@ -186,16 +190,10 @@ def build_fetch_batches(fetch_queue, settings):
                     "parallelism": parallelism,
                     "file_output": file_output,
                     "body_file": f"fetch-results/{batch_id}.json",
+                    "semantic_file": f"semantic-bodies/{batch_id}.json",
                     "evidence_file": f"evidence-parts/{batch_id}.json",
-                    "items": [
-                        {
-                            "global_id": item["global_id"],
-                            "id": item["id"],
-                            "source_type": item["source_type"],
-                            "source_ref": item["source_ref"],
-                        }
-                        for item in group
-                    ],
+                    "request_file": f"fetch-requests/{batch_id}.json",
+                    "global_ids": [item["global_id"] for item in group],
                 }
             )
     return batches
@@ -347,14 +345,40 @@ def prepare(payload, plan=None):
     fetch_batches = build_fetch_batches(fetch_queue, settings)
     fetch_waves = build_fetch_waves(fetch_batches)
 
+    candidate_index = {}
+    for item in fetch_queue:
+        candidate_index[item["global_id"]] = {
+            key: value for key, value in item.items() if key != "global_id"
+        }
     return {
-        "schema_version": 1,
-        "fetch_queue": fetch_queue,
+        "schema_version": 2,
+        "candidate_index": candidate_index,
         "fetch_batches": fetch_batches,
         "fetch_waves": fetch_waves,
         "included_counts": included_counts,
         "deduplicated_count": deduplicated_count,
     }
+
+
+def write_batch_requests(output_path, result):
+    output_root = output_path.parent
+    index = result["candidate_index"]
+    for batch in result["fetch_batches"]:
+        request_path = output_root / batch["request_file"]
+        items = [
+            {"global_id": global_id, **index[global_id]}
+            for global_id in batch["global_ids"]
+        ]
+        write_json_compact_atomic(
+            request_path,
+            {
+                "schema_version": 1,
+                "batch_id": batch["batch_id"],
+                "adapter_id": batch["adapter_id"],
+                "operation": batch["operation"],
+                "items": items,
+            },
+        )
 
 
 def build_parser():
@@ -377,14 +401,15 @@ def main():
         payload = read_json(input_path, "candidate file")
         plan = read_json(Path(args.run_plan), "run plan") if args.run_plan else None
         result = prepare(payload, plan)
-        write_json_atomic(output_path, result)
+        write_batch_requests(output_path, result)
+        write_json_compact_atomic(output_path, result)
     except (OSError, ValueError) as exc:
         print(json.dumps({"error": str(exc)}, ensure_ascii=False), file=sys.stderr)
         return 2
 
     summary = {
         "queue_file": str(output_path),
-        "queued": len(result["fetch_queue"]),
+        "queued": len(result["candidate_index"]),
         "included_counts": result["included_counts"],
         "deduplicated_count": result["deduplicated_count"],
         "fetch_batch_count": len(result["fetch_batches"]),

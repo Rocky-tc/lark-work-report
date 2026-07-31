@@ -430,6 +430,109 @@ class RenderReportTests(unittest.TestCase):
         finally:
             tmp.cleanup()
 
+    def test_repeated_sources_use_one_short_reference_definition(self):
+        payload = model_v2()
+        repeated = "source://host.lark/docs/doc-1"
+        payload["summary"][1]["source_ref"] = repeated
+        payload["coverage"]["work_count"] = 2
+        tmp, result, report = run_renderer(payload, output=True)
+        try:
+            self.assertEqual(result.returncode, 0, result.stderr)
+            markdown = report.read_text(encoding="utf-8")
+            self.assertEqual(markdown.count(repeated), 1)
+            self.assertGreaterEqual(markdown.count("[W1][W1]"), 2)
+            self.assertIn(f"[W1]: {repeated}", markdown)
+
+            ledger_file = Path(tmp.name) / "ledger.json"
+            ledger_file.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 2,
+                        "work": [
+                            {
+                                "source_ref": repeated,
+                                "source_refs": [
+                                    repeated,
+                                    "source://host.lark/comments/comment-1",
+                                ],
+                            },
+                            {
+                                "source_ref": "https://example.com/secondary",
+                                "source_refs": [
+                                    "https://example.com/secondary",
+                                    "https://example.com/secondary-comment",
+                                ],
+                            },
+                        ],
+                        "uncertain": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            validation = subprocess.run(
+                [
+                    sys.executable,
+                    str(VALIDATOR),
+                    "--profile",
+                    "weekly",
+                    "--file",
+                    str(report),
+                    "--ledger-file",
+                    str(ledger_file),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(
+                validation.returncode,
+                0,
+                validation.stdout + validation.stderr,
+            )
+        finally:
+            tmp.cleanup()
+
+    def test_unique_sources_remain_inline_without_reference_definition(self):
+        tmp, result, _ = run_renderer(model())
+        try:
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(
+                "[工作来源](https://example.com/primary)",
+                result.stdout,
+            )
+            self.assertNotIn("\n[W1]:", result.stdout)
+        finally:
+            tmp.cleanup()
+
+    def test_coverage_is_one_compact_lossless_line(self):
+        tmp, result, _ = run_renderer(model())
+        try:
+            self.assertEqual(result.returncode, 0, result.stderr)
+            coverage_lines = [
+                line
+                for line in result.stdout.splitlines()
+                if line.startswith("- 范围：")
+            ]
+            self.assertEqual(len(coverage_lines), 1)
+            self.assertIn("｜快照：", coverage_lines[0])
+            self.assertIn("｜覆盖：日历、消息、文档", coverage_lines[0])
+            self.assertIn("｜缺口：无", coverage_lines[0])
+            self.assertIn("｜计数：work=3，uncertain=0", coverage_lines[0])
+            self.assertNotIn("- 时间窗：", result.stdout)
+        finally:
+            tmp.cleanup()
+
+    def test_optional_summary_fact_repeated_in_detail_is_rendered_once(self):
+        payload = model()
+        payload["summary"][1]["impact"] = payload["workstreams"][0]["impact"]
+        tmp, result, _ = run_renderer(payload)
+        try:
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.count("减少重复章节"), 1)
+            self.assertIn("完成关键结果", result.stdout)
+        finally:
+            tmp.cleanup()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -398,6 +398,68 @@ class ValidateReportTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("--ledger-file", result.stderr)
 
+    def test_compact_coverage_line_passes(self):
+        compact = VALID_WEEKLY.replace(
+            "- 时间窗：2026-07-20T00:00:00+08:00 至 "
+            "2026-07-26T18:00:00+08:00\n"
+            "- 快照时间：2026-07-26T18:00:00+08:00\n"
+            "- 覆盖域：日历、消息、文档、任务、会议\n"
+            "- 权限缺口：话题群接口未覆盖\n"
+            "- 分类计数：work=2，uncertain=1",
+            "- 范围：2026-07-20T00:00:00+08:00 至 "
+            "2026-07-26T18:00:00+08:00｜"
+            "快照：2026-07-26T18:00:00+08:00｜"
+            "覆盖：日历、消息、文档、任务、会议｜"
+            "缺口：话题群接口未覆盖｜"
+            "计数：work=2，uncertain=1",
+        )
+        result = run_validator(compact)
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_short_source_reference_resolves_to_ledger(self):
+        report = VALID_WEEKLY.replace(
+            "[工作来源](https://example.com/overview)",
+            "[W1][W1]",
+        ).replace(
+            "- 分类计数：work=2，uncertain=1",
+            "- 分类计数：work=2，uncertain=1\n"
+            "[W1]: https://example.com/overview",
+        )
+        result = run_validator(report)
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_undefined_short_source_reference_fails(self):
+        report = VALID_WEEKLY.replace(
+            "[工作来源](https://example.com/overview)",
+            "[W1][W1]",
+        )
+        result = run_validator(report)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue(
+            any(
+                "未定义的来源短引用：W1" in error
+                for error in json.loads(result.stdout)["errors"]
+            )
+        )
+
+    def test_wrong_partition_short_source_reference_fails(self):
+        report = VALID_WEEKLY.replace(
+            "[待复核来源](https://example.com/uncertain)",
+            "[W1][W1]",
+        ).replace(
+            "- 分类计数：work=2，uncertain=1",
+            "- 分类计数：work=2，uncertain=1\n"
+            "[W1]: https://example.com/uncertain",
+        )
+        result = run_validator(report)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue(
+            any(
+                "待复核" in error and "待复核来源" in error
+                for error in json.loads(result.stdout)["errors"]
+            )
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

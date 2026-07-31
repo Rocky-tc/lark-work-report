@@ -8,6 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).parents[1]
 MANAGER = ROOT / "scripts" / "manage-run.py"
 COMPILER = ROOT / "scripts" / "compile-evidence.py"
+NORMALIZER = ROOT / "scripts" / "normalize-fetch-body.py"
 
 
 def run(command, *args):
@@ -126,11 +127,19 @@ class CompileEvidenceTests(unittest.TestCase):
         ledger = json.loads(
             (self.run_dir / "ledger.json").read_text(encoding="utf-8")
         )
+        synthesis = json.loads(
+            (self.run_dir / "synthesis-view.json").read_text(encoding="utf-8")
+        )
         audit = json.loads(
             (self.run_dir / "extraction-audit.json").read_text(encoding="utf-8")
         )
         self.assertEqual(len(records["records"]), 1)
         self.assertEqual(len(ledger["work"]), 1)
+        self.assertEqual(
+            [item["cluster_id"] for item in synthesis["work"]],
+            [item["cluster_id"] for item in ledger["work"]],
+        )
+        self.assertNotIn("source_ref", json.dumps(synthesis, ensure_ascii=False))
         self.assertEqual(audit["processed_count"], 2)
         self.assertEqual(
             audit["outcome_counts"],
@@ -157,6 +166,14 @@ class CompileEvidenceTests(unittest.TestCase):
         result = run(COMPILER, "--run-dir", str(self.run_dir))
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("missing extraction results", result.stderr)
+        repair = json.loads(
+            (self.run_dir / "repair-queue.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            set(repair["candidate_index"]),
+            {self.other["global_id"]},
+        )
+        self.assertEqual(repair["issues"][0]["reason_code"], "missing_result")
         self.assertFalse((self.run_dir / "evidence-records.json").exists())
         self.assertFalse((self.run_dir / "ledger.json").exists())
 
@@ -180,6 +197,11 @@ class CompileEvidenceTests(unittest.TestCase):
         result = run(COMPILER, "--run-dir", str(self.run_dir))
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("duplicate extraction result", result.stderr)
+        repair = json.loads(
+            (self.run_dir / "repair-queue.json").read_text(encoding="utf-8")
+        )
+        self.assertIn(self.work["global_id"], repair["candidate_index"])
+        self.assertNotIn(self.other["global_id"], repair["candidate_index"])
 
     def test_record_identity_must_match_fetch_queue(self):
         mismatched = record(self.work)
@@ -234,6 +256,45 @@ class CompileEvidenceTests(unittest.TestCase):
             ],
         )
 
+    def test_schema_v2_candidate_index_compiles(self):
+        (self.run_dir / "fetch-queue.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "candidate_index": {
+                        self.work["global_id"]: {
+                            key: value
+                            for key, value in self.work.items()
+                            if key != "global_id"
+                        },
+                        self.other["global_id"]: {
+                            key: value
+                            for key, value in self.other.items()
+                            if key != "global_id"
+                        },
+                    },
+                    "included_counts": {"work": 2, "uncertain": 0},
+                    "deduplicated_count": 0,
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.write_part(
+            [
+                {
+                    "global_id": self.work["global_id"],
+                    "outcome": "work",
+                    "record": record(self.work),
+                },
+                {
+                    "global_id": self.other["global_id"],
+                    "outcome": "discarded_chatter",
+                },
+            ]
+        )
+        result = run(COMPILER, "--run-dir", str(self.run_dir))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_managed_batches_require_complete_body_files(self):
         queue = json.loads(
             (self.run_dir / "fetch-queue.json").read_text(encoding="utf-8")
@@ -269,6 +330,17 @@ class CompileEvidenceTests(unittest.TestCase):
         result = run(COMPILER, "--run-dir", str(self.run_dir))
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("missing complete fetch body file", result.stderr)
+        repair = json.loads(
+            (self.run_dir / "repair-queue.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(set(repair["candidate_index"]), {
+            self.work["global_id"],
+            self.other["global_id"],
+        })
+        self.assertEqual(
+            {issue["reason_code"] for issue in repair["issues"]},
+            {"missing_body"},
+        )
 
         (self.run_dir / "fetch-results").mkdir()
         (self.run_dir / "fetch-results" / "fetch-0001.json").write_text(
@@ -277,6 +349,103 @@ class CompileEvidenceTests(unittest.TestCase):
         )
         result = run(COMPILER, "--run-dir", str(self.run_dir))
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse((self.run_dir / "repair-queue.json").exists())
+
+    def test_schema_v2_batches_require_verified_normalized_body(self):
+        index = {
+            item["global_id"]: {
+                key: value for key, value in item.items() if key != "global_id"
+            }
+            for item in (self.work, self.other)
+        }
+        ids = list(index)
+        (self.run_dir / "fetch-queue.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "candidate_index": index,
+                    "fetch_batches": [
+                        {
+                            "batch_id": "fetch-0001",
+                            "request_file": "fetch-requests/fetch-0001.json",
+                            "body_file": "fetch-results/fetch-0001.json",
+                            "semantic_file": "semantic-bodies/fetch-0001.json",
+                            "evidence_file": "evidence-parts/fetch-0001.json",
+                            "global_ids": ids,
+                        }
+                    ],
+                    "fetch_waves": [{"wave": 1, "parallel": False, "batch_ids": ["fetch-0001"]}],
+                    "included_counts": {"work": 2, "uncertain": 0},
+                    "deduplicated_count": 0,
+                }
+            ),
+            encoding="utf-8",
+        )
+        (self.run_dir / "fetch-requests").mkdir()
+        request_file = self.run_dir / "fetch-requests" / "fetch-0001.json"
+        request_file.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "batch_id": "fetch-0001",
+                    "adapter_id": "test.adapter",
+                    "operation": "candidate.fetch_many",
+                    "items": [{"global_id": value} for value in ids],
+                }
+            ),
+            encoding="utf-8",
+        )
+        (self.run_dir / "fetch-results").mkdir()
+        body_file = self.run_dir / "fetch-results" / "fetch-0001.json"
+        body_file.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "batch_id": "fetch-0001",
+                    "results": [
+                        {
+                            "global_id": value,
+                            "content_type": "text",
+                            "content": f"完整正文 {value}",
+                            "context": {},
+                        }
+                        for value in ids
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        semantic_file = self.run_dir / "semantic-bodies" / "fetch-0001.json"
+        normalized = run(
+            NORMALIZER,
+            "--request-file",
+            str(request_file),
+            "--body-file",
+            str(body_file),
+            "--output",
+            str(semantic_file),
+        )
+        self.assertEqual(normalized.returncode, 0, normalized.stderr)
+        self.write_part(
+            [
+                {
+                    "global_id": self.work["global_id"],
+                    "outcome": "work",
+                    "record": record(self.work),
+                },
+                {
+                    "global_id": self.other["global_id"],
+                    "outcome": "discarded_chatter",
+                },
+            ]
+        )
+        result = run(COMPILER, "--run-dir", str(self.run_dir))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+        semantic_file.write_text("{}", encoding="utf-8")
+        result = run(COMPILER, "--run-dir", str(self.run_dir))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("does not match raw body", result.stderr)
 
 
 if __name__ == "__main__":

@@ -61,6 +61,13 @@ def run_plan(*adapters):
     return {"adapters": list(adapters)}
 
 
+def indexed(queue):
+    return [
+        {"global_id": global_id, **item}
+        for global_id, item in queue["candidate_index"].items()
+    ]
+
+
 def adapter(
     adapter_id,
     batch_size=1,
@@ -93,16 +100,16 @@ class PrepareFetchQueueTests(unittest.TestCase):
         summary = json.loads(result.stdout)
         self.assertEqual(summary["queued"], 2)
         self.assertNotIn("fetch_queue", summary)
-        self.assertEqual([item["id"] for item in queue["fetch_queue"]], ["C", "D"])
+        self.assertEqual([item["id"] for item in indexed(queue)], ["C", "D"])
         self.assertEqual(queue["included_counts"], {"work": 1, "uncertain": 1})
         self.assertNotIn("skipped_counts", queue)
         self.assertNotIn("skipped_counts", summary)
-        self.assertNotIn("unknown", queue["fetch_queue"][0])
+        self.assertNotIn("unknown", indexed(queue)[0])
         self.assertEqual(
-            queue["fetch_queue"][0]["global_id"],
+            indexed(queue)[0]["global_id"],
             "test.adapter:docs:C",
         )
-        serialized = json.dumps(queue["fetch_queue"], ensure_ascii=False)
+        serialized = json.dumps(queue["candidate_index"], ensure_ascii=False)
         self.assertNotIn("家庭体检安排", serialized)
         self.assertNotIn("午饭约哪", serialized)
         self.assertNotIn("项目 A 复盘", result.stdout)
@@ -154,7 +161,7 @@ class PrepareFetchQueueTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(
-            {item["source_type"] for item in queue["fetch_queue"]},
+            {item["source_type"] for item in indexed(queue)},
             {"mentions", "comments", "code_activity", "ai_sessions"},
         )
 
@@ -173,7 +180,7 @@ class PrepareFetchQueueTests(unittest.TestCase):
             ]
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        item = queue["fetch_queue"][0]
+        item = indexed(queue)[0]
         self.assertTrue(item["requires_response"])
         self.assertEqual(item["action_kind"], "reply")
         self.assertEqual(item["assignee_relation"], "self")
@@ -202,7 +209,7 @@ class PrepareFetchQueueTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(
-            [item["source_type"] for item in queue["fetch_queue"]],
+            [item["source_type"] for item in indexed(queue)],
             ["tasks", "comments", "ai_sessions"],
         )
 
@@ -249,9 +256,9 @@ class PrepareFetchQueueTests(unittest.TestCase):
         summary = json.loads(result.stdout)
         self.assertEqual(summary["deduplicated_count"], 1)
         self.assertEqual(summary["queued"], 1)
-        self.assertEqual(queue["fetch_queue"][0]["adapter_id"], "batch.adapter")
-        self.assertEqual(queue["fetch_queue"][0]["prefetch_relevance"], "work")
-        self.assertEqual(len(queue["fetch_queue"][0]["alternate_ids"]), 1)
+        self.assertEqual(indexed(queue)[0]["adapter_id"], "batch.adapter")
+        self.assertEqual(indexed(queue)[0]["prefetch_relevance"], "work")
+        self.assertEqual(len(indexed(queue)[0]["alternate_ids"]), 1)
 
     def test_private_and_work_conflict_on_same_source_is_rejected(self):
         shared = "source://host/docs/shared"
@@ -278,7 +285,7 @@ class PrepareFetchQueueTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout)["fetch_batch_count"], 3)
         self.assertEqual(
-            [len(batch["items"]) for batch in queue["fetch_batches"]],
+            [len(batch["global_ids"]) for batch in queue["fetch_batches"]],
             [2, 2, 1],
         )
 
@@ -298,11 +305,66 @@ class PrepareFetchQueueTests(unittest.TestCase):
             batch["evidence_file"],
             "evidence-parts/fetch-0001.json",
         )
+        self.assertEqual(
+            batch["semantic_file"],
+            "semantic-bodies/fetch-0001.json",
+        )
         self.assertTrue(batch["file_output"])
         self.assertEqual(
-            [item["global_id"] for item in batch["items"]],
+            batch["global_ids"],
             ["test.adapter:docs:A", "test.adapter:docs:B"],
         )
+        self.assertEqual(
+            batch["request_file"],
+            "fetch-requests/fetch-0001.json",
+        )
+
+    def test_batch_request_materializes_indexed_candidates_on_disk(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "candidates.json"
+            output = root / "fetch-queue.json"
+            plan_file = root / "run-plan.json"
+            source.write_text(
+                json.dumps(
+                    {"candidates": [candidate("A", "work"), candidate("B", "work")]}
+                ),
+                encoding="utf-8",
+            )
+            plan_file.write_text(
+                json.dumps(run_plan(adapter("test.adapter", 2))),
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--file",
+                    str(source),
+                    "--output",
+                    str(output),
+                    "--run-plan",
+                    str(plan_file),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            queue = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(queue["schema_version"], 2)
+            self.assertNotIn("fetch_queue", queue)
+            self.assertNotIn("items", queue["fetch_batches"][0])
+            request = json.loads(
+                (root / queue["fetch_batches"][0]["request_file"]).read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(
+                [item["global_id"] for item in request["items"]],
+                queue["fetch_batches"][0]["global_ids"],
+            )
+            self.assertEqual(request["items"][0]["source_ref"], "source://docs/A")
 
     def test_fetch_waves_respect_adapter_parallelism(self):
         result, queue = run_filter(
@@ -328,7 +390,7 @@ class PrepareFetchQueueTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout)["deduplicated_count"], 0)
         self.assertEqual(queue["deduplicated_count"], 0)
-        self.assertEqual(queue["fetch_queue"], [])
+        self.assertEqual(queue["candidate_index"], {})
 
 
 if __name__ == "__main__":
