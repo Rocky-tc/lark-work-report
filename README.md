@@ -4,7 +4,7 @@
 
 核心流程遵循开放的 `SKILL.md` 目录结构，不依赖某个特定智能体品牌。任何兼容 Agent Skills 的宿主都可以在具备相应数据能力时使用它。
 
-当前 Skill 版本：`0.14.0`。
+当前 Skill 版本：`0.14.1`。
 
 ## 核心能力
 
@@ -175,7 +175,7 @@ lark-cli profile list
 
 输出适配器能创建并回读飞书文档时，默认交付新文档；否则交付经过相同校验的 Markdown 草稿。
 
-输出统一为五段正文的紧凑报告：摘要、进展与结果、风险、下一周期重点、待复核。个人模板可以改变显示名称和文本布局，但不能删除或重排正文槽。标准流程的报告模型 v5 只由 Agent 提交短引用及必要叙事；账本指纹由接口私下注入。单记录、单来源、无冲突、字段充分且未启用个人模板的条目可只交引用或可选叙事，本地接口补齐必填文本。多来源归纳、冲突和模板文风继续由模型写作。接口同时回填主体、周期、覆盖信息、真实证据 ID、多来源、排序依据、截止时间、待回复、行动类型和责任关系，再按固定顺序渲染。
+输出统一为五段正文的紧凑报告：摘要、进展与结果、风险、下一周期重点、待复核。个人模板可以改变显示名称和文本布局，但不能删除或重排正文槽；旧模板中的 `coverage` 槽仍可读取，但不再渲染，也不会写入新的规范化模板。标准流程的报告模型 v5 只由 Agent 提交短引用及必要叙事；账本指纹由接口私下注入。单记录、单来源、无冲突、字段充分且未启用个人模板的条目可只交引用或可选叙事，本地接口补齐必填文本。多来源归纳、冲突和模板文风继续由模型写作。接口同时回填主体、周期、覆盖信息、真实证据 ID、多来源、排序依据、截止时间、待回复、行动类型和责任关系，再按固定顺序渲染。
 
 ## 运行安全
 
@@ -223,8 +223,10 @@ lark-work-report/
 │   ├── template-profile.schema.json
 │   └── template-profiles.md
 ├── scripts/
+│   ├── compare-runs.py
 │   ├── contracts.py
 │   ├── compile-evidence.py
+│   ├── execution_graph.py
 │   ├── finalize-run.py
 │   ├── manage-run.py
 │   ├── normalize-fetch-body.py
@@ -233,6 +235,8 @@ lark-work-report/
 │   ├── prepare-run.py
 │   ├── prepare-synthesis-view.py
 │   ├── reconcile-evidence.py
+│   ├── record-node-usage.py
+│   ├── record-run-usage.py
 │   ├── repair_queue.py
 │   ├── report_hydration.py
 │   ├── request_context.py
@@ -243,6 +247,7 @@ lark-work-report/
 │   ├── stage-io.py
 │   ├── stage_io.py
 │   ├── template_profiles.py
+│   ├── usage_metrics.py
 │   ├── value_contracts.py
 │   ├── validate-adapter.py
 │   ├── validate-report.py
@@ -276,7 +281,7 @@ python3 -m py_compile scripts/*.py tools/*.py tests/*.py
 python3 tools/build_package.py
 ```
 
-GitHub Actions 会在推送和拉取请求中重复执行编译、测试和可复现运行包构建。生成的 ZIP 只包含运行所需的 `SKILL.md`、`agents/`、`references/` 和 `scripts/`，不包含测试、仓库元数据或本地缓存。
+发布前应在本地或 CI 中执行编译、测试和可复现运行包构建。生成的 ZIP 只包含运行所需的 `SKILL.md`、`agents/`、`references/` 和 `scripts/`，不包含测试、仓库元数据或本地缓存。
 
 ## 当前边界
 
