@@ -13,42 +13,177 @@ SCRIPT = Path(__file__).parents[1] / "scripts" / "validate-report.py"
 VALID_WEEKLY = """\
 # 张三个人周报｜2026-07-20 至 2026-07-26
 
-## 本周概览
-- 完成核心方案评审。[工作来源](https://example.com/overview)
+## 本周摘要
+- 完成核心方案评审并形成统一输出方向。[工作来源](https://example.com/overview)
 
-## 各工作流进展与结果
-- 报告 Skill 完成设计并进入开发。[工作来源](https://example.com/workstream)
+## 工作流进展与结果
+- **报告 Skill｜已完成**：形成可执行规格；决策：采用一套引擎、三种报告格式。[工作来源](https://example.com/workstream)
 
-## 关键产出和里程碑
-- 形成可执行规格。[工作来源](https://example.com/output)
-
-## 关键决策
-- 采用一套引擎、三套报告策略。[工作来源](https://example.com/decision)
-
-## 风险、阻塞和需协助事项
+## 风险与需协助事项
 - 无
 
-## 下周计划
+## 下周重点
 - 完成真实数据 shadow run。
 
 ## 待复核
 - 新方案探索可能属于本周工作；原因：工作流归属尚不明确。[待复核来源](https://example.com/uncertain)
 
-## 证据索引与覆盖说明
-- 时间窗：2026-07-20T00:00:00+08:00 至 2026-07-27T00:00:00+08:00
-- 快照时间：2026-07-26T18:00:00+08:00
-- 覆盖域：日历、消息、文档、任务、会议
-- 权限缺口：话题群接口未覆盖
-- 分类计数：work=12，uncertain=2
+> 覆盖说明：已覆盖日历、消息、文档、任务、会议；未能访问话题群接口未覆盖。
+"""
+
+DEFAULT_LEDGER = {
+    "work": [
+        {"source_ref": "https://example.com/overview"},
+        {"source_ref": "https://example.com/workstream"},
+    ],
+    "uncertain": [
+        {"source_ref": "https://example.com/uncertain"},
+    ],
+}
+
+
+OBLIGATION_LEDGER = {
+    "schema_version": 2,
+    "snapshot": "2026-07-26T18:00:00+08:00",
+    "work": [
+        {
+            "cluster_id": "cluster-work-1",
+            "source_ref": "https://example.com/work/1",
+            "source_refs": ["https://example.com/work/1"],
+            "status": "completed",
+            "output": "完成报告优化",
+            "impact": "减少重复上下文",
+            "decision": "保留确定性回填",
+            "risk": "旧宿主缺少结构化输出",
+            "next_action": "观察真实运行效果",
+        }
+    ],
+    "uncertain": [],
+}
+
+
+OBLIGATION_REPORT = """\
+# 张三个人周报｜2026-07-20 至 2026-07-26
+
+## 本周摘要
+- 完成报告优化；影响：减少重复上下文；决策：保留确定性回填。[工作来源](https://example.com/work/1)
+
+## 工作流进展与结果
+- **报告 Skill｜已完成**：完成报告优化；影响：减少重复上下文；决策：保留确定性回填。[工作来源](https://example.com/work/1)
+
+## 风险与需协助事项
+- 旧宿主缺少结构化输出。[工作来源](https://example.com/work/1)
+
+## 下周重点
+- 观察真实运行效果。[工作来源](https://example.com/work/1)
+
+## 待复核
+- 无
 """
 
 
-def run_validator(markdown, profile="weekly"):
+def coverage_model(
+    *,
+    start="2026-07-20T00:00:00+08:00",
+    end="2026-07-26T18:00:00+08:00",
+    snapshot="2026-07-26T18:00:00+08:00",
+    domains=None,
+    gaps=None,
+    work_count=2,
+    uncertain_count=1,
+):
+    return {
+        "schema_version": 2,
+        "coverage": {
+            "start": start,
+            "end": end,
+            "snapshot": snapshot,
+            "domains": domains
+            if domains is not None
+            else ["日历", "消息", "文档", "任务", "会议"],
+            "access_gaps": gaps
+            if gaps is not None
+            else ["话题群接口未覆盖"],
+            "work_count": work_count,
+            "uncertain_count": uncertain_count,
+        },
+    }
+
+
+def obligation_model():
+    model = coverage_model(
+        domains=["文档"],
+        gaps=[],
+        work_count=1,
+        uncertain_count=0,
+    )
+    model.update(
+        {
+            "schema_version": 3,
+            "profile": "weekly",
+            "title": "张三个人周报｜2026-07-20 至 2026-07-26",
+            "summary": [
+                {
+                    "result": "完成报告优化",
+                    "impact": "减少重复上下文",
+                    "decision": "保留确定性回填",
+                    "evidence_ids": ["cluster-work-1"],
+                }
+            ],
+            "workstreams": [
+                {
+                    "name": "报告 Skill",
+                    "status": "completed",
+                    "result": "完成报告优化",
+                    "impact": "减少重复上下文",
+                    "decision": "保留确定性回填",
+                    "evidence_ids": ["cluster-work-1"],
+                }
+            ],
+            "risks": [
+                {
+                    "risk": "旧宿主缺少结构化输出",
+                    "evidence_ids": ["cluster-work-1"],
+                }
+            ],
+            "next_actions": [
+                {
+                    "action": "观察真实运行效果",
+                    "evidence_ids": ["cluster-work-1"],
+                }
+            ],
+            "uncertain": [],
+        }
+    )
+    return model
+
+
+def run_validator(
+    markdown,
+    profile="weekly",
+    ledger=DEFAULT_LEDGER,
+    model=None,
+):
     with tempfile.TemporaryDirectory() as tmp:
         report = Path(tmp) / "report.md"
         report.write_text(textwrap.dedent(markdown), encoding="utf-8")
+        command = [
+            sys.executable,
+            str(SCRIPT),
+            "--profile",
+            profile,
+            "--file",
+            str(report),
+        ]
+        ledger_file = Path(tmp) / "ledger.json"
+        ledger_file.write_text(json.dumps(ledger), encoding="utf-8")
+        command.extend(["--ledger-file", str(ledger_file)])
+        if model is not None:
+            model_file = Path(tmp) / "model.json"
+            model_file.write_text(json.dumps(model), encoding="utf-8")
+            command.extend(["--model-file", str(model_file)])
         return subprocess.run(
-            [sys.executable, str(SCRIPT), "--profile", profile, "--file", str(report)],
+            command,
             capture_output=True,
             text=True,
             check=False,
@@ -63,34 +198,173 @@ class ValidateReportTests(unittest.TestCase):
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["errors"], [])
 
+    def test_next_action_cannot_be_covered_only_by_summary(self):
+        model = obligation_model()
+        model["next_actions"] = []
+        report = OBLIGATION_REPORT.replace(
+            "- 观察真实运行效果。[工作来源](https://example.com/work/1)",
+            "- 无",
+        )
+        result = run_validator(report, ledger=OBLIGATION_LEDGER, model=model)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "报告模型字段未覆盖：cluster-work-1.next_action 必须出现在 "
+            "next_actions.action",
+            json.loads(result.stdout)["errors"],
+        )
+
+    def test_all_meaningful_ledger_fields_in_matching_sections_pass(self):
+        result = run_validator(
+            OBLIGATION_REPORT,
+            ledger=OBLIGATION_LEDGER,
+            model=obligation_model(),
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_risk_cannot_be_covered_only_by_summary(self):
+        model = obligation_model()
+        model["risks"] = []
+        report = OBLIGATION_REPORT.replace(
+            "- 旧宿主缺少结构化输出。[工作来源](https://example.com/work/1)",
+            "- 无",
+        )
+        result = run_validator(report, ledger=OBLIGATION_LEDGER, model=model)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "报告模型字段未覆盖：cluster-work-1.risk 必须出现在 risks.risk",
+            json.loads(result.stdout)["errors"],
+        )
+
+    def test_decision_requires_a_decision_field_in_a_result_section(self):
+        model = obligation_model()
+        del model["summary"][0]["decision"]
+        del model["workstreams"][0]["decision"]
+        report = OBLIGATION_REPORT.replace(
+            "；决策：保留确定性回填",
+            "",
+        )
+        result = run_validator(report, ledger=OBLIGATION_LEDGER, model=model)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "报告模型字段未覆盖：cluster-work-1.decision 必须出现在 "
+            "summary.decision 或 workstreams.decision",
+            json.loads(result.stdout)["errors"],
+        )
+
+    def test_output_requires_a_result_field_in_a_result_section(self):
+        model = obligation_model()
+        del model["summary"][0]["result"]
+        del model["workstreams"][0]["result"]
+        result = run_validator(
+            OBLIGATION_REPORT,
+            ledger=OBLIGATION_LEDGER,
+            model=model,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "报告模型字段未覆盖：cluster-work-1.output 必须出现在 "
+            "summary.result 或 workstreams.result",
+            json.loads(result.stdout)["errors"],
+        )
+
+    def test_known_status_requires_a_matching_workstream_status(self):
+        model = obligation_model()
+        model["workstreams"] = []
+        report = OBLIGATION_REPORT.replace(
+            "- **报告 Skill｜已完成**：完成报告优化；影响：减少重复上下文；"
+            "决策：保留确定性回填。[工作来源](https://example.com/work/1)",
+            "- 无",
+        )
+        result = run_validator(report, ledger=OBLIGATION_LEDGER, model=model)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "报告模型字段未覆盖：cluster-work-1.status=completed 必须出现在 "
+            "workstreams.status",
+            json.loads(result.stdout)["errors"],
+        )
+
+    def test_workstream_status_must_match_its_ledger_evidence(self):
+        model = obligation_model()
+        model["workstreams"][0]["status"] = "in_progress"
+        result = run_validator(
+            OBLIGATION_REPORT,
+            ledger=OBLIGATION_LEDGER,
+            model=model,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "报告模型字段未覆盖：cluster-work-1.status=completed 必须出现在 "
+            "workstreams.status",
+            json.loads(result.stdout)["errors"],
+        )
+
+    def test_impact_requires_an_impact_field_in_a_fact_section(self):
+        model = obligation_model()
+        del model["summary"][0]["impact"]
+        del model["workstreams"][0]["impact"]
+        report = OBLIGATION_REPORT.replace(
+            "；影响：减少重复上下文",
+            "",
+        )
+        result = run_validator(report, ledger=OBLIGATION_LEDGER, model=model)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "报告模型字段未覆盖：cluster-work-1.impact 必须出现在 "
+            "summary.impact、workstreams.impact 或 risks.impact",
+            json.loads(result.stdout)["errors"],
+        )
+
     def test_missing_required_section_fails(self):
-        report = VALID_WEEKLY.replace("## 关键决策\n", "## 决策\n")
+        report = VALID_WEEKLY.replace(
+            "## 风险与需协助事项\n",
+            "## 风险\n",
+        )
         result = run_validator(report)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("缺少必需章节：关键决策", json.loads(result.stdout)["errors"])
+        self.assertIn(
+            "缺少必需章节：风险与需协助事项",
+            json.loads(result.stdout)["errors"],
+        )
+
+    def test_independent_coverage_section_fails(self):
+        report = VALID_WEEKLY + "\n## 来源与覆盖\n- 不应再单列。\n"
+        result = run_validator(report)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "不得输出独立“来源与覆盖”章节",
+            json.loads(result.stdout)["errors"],
+        )
 
     def test_key_claim_without_source_anchor_fails(self):
         report = VALID_WEEKLY.replace(
-            "- 形成可执行规格。[工作来源](https://example.com/output)",
-            "- 形成可执行规格。",
+            "[工作来源](https://example.com/workstream)",
+            "",
         )
         result = run_validator(report)
         self.assertNotEqual(result.returncode, 0)
         errors = json.loads(result.stdout)["errors"]
-        self.assertTrue(any("关键产出和里程碑" in error and "来源锚" in error for error in errors))
+        self.assertTrue(
+            any("工作流进展与结果" in error and "来源锚" in error for error in errors)
+        )
 
     def test_key_claim_paragraph_without_source_anchor_fails(self):
         report = VALID_WEEKLY.replace(
-            "- 报告 Skill 完成设计并进入开发。[工作来源](https://example.com/workstream)",
-            "报告 Skill 完成设计并进入开发。",
+            "- **报告 Skill｜已完成**：形成可执行规格；决策：采用一套引擎、三种报告格式。"
+            "[工作来源](https://example.com/workstream)",
+            "报告 Skill 已完成可执行规格。",
         )
         result = run_validator(report)
         self.assertNotEqual(result.returncode, 0)
         errors = json.loads(result.stdout)["errors"]
-        self.assertTrue(any("各工作流进展与结果" in error and "来源锚" in error for error in errors))
+        self.assertTrue(
+            any("工作流进展与结果" in error and "来源锚" in error for error in errors)
+        )
 
     def test_placeholders_fail(self):
-        report = VALID_WEEKLY.replace("- 完成真实数据 shadow run。", "- TODO：补充计划。")
+        report = VALID_WEEKLY.replace(
+            "- 完成真实数据 shadow run。",
+            "- TODO：补充计划。",
+        )
         result = run_validator(report)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("报告包含 TODO/TBD 占位符", json.loads(result.stdout)["errors"])
@@ -116,40 +390,334 @@ class ValidateReportTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         errors = json.loads(result.stdout)["errors"]
         self.assertTrue(any("待复核" in error and "原因" in error for error in errors))
-        self.assertTrue(any("待复核" in error and "待复核来源" in error for error in errors))
+        self.assertTrue(
+            any("待复核" in error and "待复核来源" in error for error in errors)
+        )
 
     def test_pending_review_source_cannot_support_work_claim(self):
         report = VALID_WEEKLY.replace(
-            "[工作来源](https://example.com/output)",
-            "[待复核来源](https://example.com/output)",
+            "[工作来源](https://example.com/workstream)",
+            "[待复核来源](https://example.com/workstream)",
         )
         result = run_validator(report)
         self.assertNotEqual(result.returncode, 0)
         errors = json.loads(result.stdout)["errors"]
-        self.assertTrue(any("关键产出和里程碑" in error and "工作来源" in error for error in errors))
+        self.assertTrue(
+            any("工作流进展与结果" in error and "工作来源" in error for error in errors)
+        )
 
     def test_four_class_counts_fail(self):
         report = VALID_WEEKLY.replace(
-            "- 分类计数：work=12，uncertain=2",
-            "- 分类计数：work=12，uncertain=2，private=1，chatter=8",
+            "话题群接口未覆盖。",
+            "话题群接口未覆盖；private=1，chatter=8。",
         )
         result = run_validator(report)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("报告只能出现 work 和 uncertain 两类内容", json.loads(result.stdout)["errors"])
+        self.assertIn(
+            "报告只能出现 work 和 uncertain 两类内容",
+            json.loads(result.stdout)["errors"],
+        )
 
     def test_private_or_chatter_content_anywhere_in_report_fails(self):
         report = VALID_WEEKLY.replace(
-            "## 下周计划\n",
-            "## 私人材料\n- 家庭体检安排\n\n## 闲聊材料\n- 午饭约哪\n\n## 下周计划\n",
+            "## 下周重点\n",
+            "## 私人材料\n- 家庭体检安排\n\n## 闲聊材料\n- 午饭约哪\n\n"
+            "## 下周重点\n",
         )
         result = run_validator(report)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("报告只能出现 work 和 uncertain 两类内容", json.loads(result.stdout)["errors"])
+        self.assertIn(
+            "报告只能出现 work 和 uncertain 两类内容",
+            json.loads(result.stdout)["errors"],
+        )
 
-    def test_aggregate_classification_counts_are_allowed(self):
-        result = run_validator(VALID_WEEKLY)
-        payload = json.loads(result.stdout)
-        self.assertEqual(payload["errors"], [])
+    def test_empty_sections_are_allowed(self):
+        report = VALID_WEEKLY.replace(
+            "- 新方案探索可能属于本周工作；原因：工作流归属尚不明确。"
+            "[待复核来源](https://example.com/uncertain)",
+            "- 无",
+        )
+        result = run_validator(
+            report,
+            ledger={
+                "work": DEFAULT_LEDGER["work"],
+                "uncertain": [],
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_duplicate_required_heading_fails(self):
+        report = VALID_WEEKLY.replace(
+            "## 工作流进展与结果",
+            "## 本周摘要\n- 重复摘要。[工作来源](source://docs/duplicate)\n\n"
+            "## 工作流进展与结果",
+        )
+        result = run_validator(report)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("必需章节重复：本周摘要", json.loads(result.stdout)["errors"])
+
+    def test_required_heading_order_is_enforced(self):
+        first = (
+            "## 本周摘要\n"
+            "- 完成核心方案评审并形成统一输出方向。"
+            "[工作来源](https://example.com/overview)\n\n"
+        )
+        second = (
+            "## 工作流进展与结果\n"
+            "- **报告 Skill｜已完成**：形成可执行规格；决策：采用一套引擎、"
+            "三种报告格式。[工作来源](https://example.com/workstream)\n\n"
+        )
+        report = VALID_WEEKLY.replace(first + second, second + first)
+        result = run_validator(report)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "必需章节顺序不符合报告策略",
+            json.loads(result.stdout)["errors"],
+        )
+
+    def test_stable_source_uri_is_accepted(self):
+        stable_source = "source://docs/doc-x@2026-07-26T10:00:00+08:00"
+        report = VALID_WEEKLY.replace(
+            "https://example.com/workstream",
+            stable_source,
+        )
+        ledger = {
+            "work": [
+                {"source_ref": "https://example.com/overview"},
+                {"source_ref": stable_source},
+            ],
+            "uncertain": DEFAULT_LEDGER["uncertain"],
+        }
+        result = run_validator(
+            report,
+            ledger=ledger,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_invalid_coverage_times_fail(self):
+        result = run_validator(
+            VALID_WEEKLY,
+            model=coverage_model(start="x", end="y"),
+        )
+        self.assertNotEqual(result.returncode, 0)
+        errors = json.loads(result.stdout)["errors"]
+        self.assertTrue(any("时间窗起点不是有效" in item for item in errors))
+        self.assertTrue(any("时间窗终点不是有效" in item for item in errors))
+
+    def test_time_window_cannot_end_after_snapshot(self):
+        result = run_validator(
+            VALID_WEEKLY,
+            model=coverage_model(
+                end="2026-07-27T00:00:00+08:00",
+            ),
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "时间窗终点不得晚于快照时间",
+            json.loads(result.stdout)["errors"],
+        )
+
+    def test_private_word_inside_source_url_does_not_false_positive(self):
+        private_path = "https://example.com/private/workstream"
+        report = VALID_WEEKLY.replace(
+            "https://example.com/workstream",
+            private_path,
+        )
+        ledger = {
+            "work": [
+                {"source_ref": "https://example.com/overview"},
+                {"source_ref": private_path},
+            ],
+            "uncertain": DEFAULT_LEDGER["uncertain"],
+        }
+        result = run_validator(
+            report,
+            ledger=ledger,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_ledger_counts_must_match_coverage(self):
+        ledger = {
+            "work": [{"source_ref": "source://docs/one"}],
+            "uncertain": [{"source_ref": "source://docs/two"}],
+        }
+        result = run_validator(
+            VALID_WEEKLY,
+            ledger=ledger,
+            model=coverage_model(),
+        )
+        self.assertNotEqual(result.returncode, 0)
+        errors = json.loads(result.stdout)["errors"]
+        self.assertTrue(
+            any("分类计数与证据账本不一致：work" in item for item in errors)
+        )
+
+    def test_report_sources_must_exist_in_matching_ledgers(self):
+        ledger = {
+            "work": [
+                {"source_ref": "https://example.com/overview"},
+                {"source_ref": "https://example.com/different"},
+            ],
+            "uncertain": [
+                {"source_ref": "https://example.com/uncertain"},
+            ],
+        }
+        result = run_validator(VALID_WEEKLY, ledger=ledger)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "工作来源锚不在 work 账本中：https://example.com/workstream",
+            json.loads(result.stdout)["errors"],
+        )
+
+    def test_source_cannot_exist_in_both_ledgers(self):
+        ledger = {
+            "work": [
+                {"source_ref": "https://example.com/overview"},
+                {"source_ref": "https://example.com/workstream"},
+            ],
+            "uncertain": [
+                {"source_ref": "https://example.com/workstream"},
+            ],
+        }
+        result = run_validator(VALID_WEEKLY, ledger=ledger)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "同一 source_ref 不能同时属于 work 和 uncertain："
+            "https://example.com/workstream",
+            json.loads(result.stdout)["errors"],
+        )
+
+    def test_v2_ledger_source_refs_are_valid_evidence_anchors(self):
+        additional = "https://example.com/additional"
+        report = VALID_WEEKLY.replace(
+            "[工作来源](https://example.com/workstream)",
+            "[工作来源](https://example.com/workstream)"
+            f"[工作来源]({additional})",
+        )
+        ledger = {
+            "schema_version": 2,
+            "work": [
+                {"source_ref": "https://example.com/overview"},
+                {
+                    "source_ref": "https://example.com/workstream",
+                    "source_refs": [
+                        "https://example.com/workstream",
+                        additional,
+                    ],
+                },
+            ],
+            "uncertain": DEFAULT_LEDGER["uncertain"],
+        }
+        result = run_validator(report, ledger=ledger)
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_positive_count_requires_a_matching_anchor(self):
+        report = VALID_WEEKLY.replace(
+            "- 新方案探索可能属于本周工作；原因：工作流归属尚不明确。"
+            "[待复核来源](https://example.com/uncertain)",
+            "- 无",
+        )
+        result = run_validator(report)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "分类计数包含 uncertain，但待复核章节没有来源锚",
+            json.loads(result.stdout)["errors"],
+        )
+
+    def test_cli_requires_ledger_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            report = Path(tmp) / "report.md"
+            report.write_text(VALID_WEEKLY, encoding="utf-8")
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--profile",
+                    "weekly",
+                    "--file",
+                    str(report),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("--ledger-file", result.stderr)
+
+    def test_conditional_coverage_notice_passes(self):
+        result = run_validator(VALID_WEEKLY, model=coverage_model())
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_missing_conditional_coverage_notice_fails(self):
+        report = VALID_WEEKLY.replace(
+            "\n> 覆盖说明：已覆盖日历、消息、文档、任务、会议；"
+            "未能访问话题群接口未覆盖。\n",
+            "\n",
+        )
+        result = run_validator(report, model=coverage_model())
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "存在覆盖缺口时必须显示覆盖说明",
+            json.loads(result.stdout)["errors"],
+        )
+
+    def test_conditional_notice_must_include_every_covered_domain(self):
+        report = VALID_WEEKLY.replace("、会议", "")
+        result = run_validator(report, model=coverage_model())
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "覆盖说明遗漏已覆盖数据源：会议",
+            json.loads(result.stdout)["errors"],
+        )
+
+    def test_complete_coverage_must_not_render_notice(self):
+        result = run_validator(
+            VALID_WEEKLY,
+            model=coverage_model(gaps=[]),
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "没有覆盖缺口时不应显示覆盖说明",
+            json.loads(result.stdout)["errors"],
+        )
+
+    def test_short_source_reference_resolves_to_ledger(self):
+        report = VALID_WEEKLY.replace(
+            "[工作来源](https://example.com/overview)",
+            "[W1][W1]",
+        )
+        report += "[W1]: https://example.com/overview\n"
+        result = run_validator(report)
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_undefined_short_source_reference_fails(self):
+        report = VALID_WEEKLY.replace(
+            "[工作来源](https://example.com/overview)",
+            "[W1][W1]",
+        )
+        result = run_validator(report)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue(
+            any(
+                "未定义的来源短引用：W1" in error
+                for error in json.loads(result.stdout)["errors"]
+            )
+        )
+
+    def test_wrong_partition_short_source_reference_fails(self):
+        report = VALID_WEEKLY.replace(
+            "[待复核来源](https://example.com/uncertain)",
+            "[W1][W1]",
+        )
+        report += "[W1]: https://example.com/uncertain\n"
+        result = run_validator(report)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue(
+            any(
+                "待复核" in error and "待复核来源" in error
+                for error in json.loads(result.stdout)["errors"]
+            )
+        )
 
 
 if __name__ == "__main__":

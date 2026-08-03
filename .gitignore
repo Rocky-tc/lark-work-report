@@ -4,3 +4,4 @@ __pycache__/
 .venv/
 candidates.json
 report.md
+dist/

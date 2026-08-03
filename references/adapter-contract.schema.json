@@ -1,0 +1,171 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "lark-work-report adapter manifest",
+  "type": "object",
+  "required": ["adapter_id", "capabilities"],
+  "additionalProperties": false,
+  "properties": {
+    "adapter_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]*$"
+    },
+    "capabilities": {
+      "type": "object",
+      "required": [
+        "identity.current",
+        "candidate.list",
+        "candidate.fetch",
+        "report.create",
+        "report.fetch"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "identity.current": {
+          "type": "object",
+          "required": ["available"],
+          "properties": {"available": {"type": "boolean"}}
+        },
+        "candidate.list": {
+          "type": "object",
+          "required": ["available"],
+          "additionalProperties": false,
+          "properties": {
+            "available": {"type": "boolean"},
+            "metadata_only": {"type": "boolean"},
+            "parallel_safe": {"type": "boolean"},
+            "max_parallelism": {
+              "type": "integer",
+              "minimum": 2,
+              "maximum": 16
+            },
+            "domains": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "calendar",
+                  "im",
+                  "mentions",
+                  "docs",
+                  "comments",
+                  "wiki",
+                  "base",
+                  "tasks",
+                  "minutes",
+                  "vc",
+                  "mail",
+                  "okr",
+                  "approval",
+                  "report_cache",
+                  "code_activity",
+                  "ai_sessions"
+                ]
+              },
+              "uniqueItems": true
+            },
+            "domain_coverage": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "calendar",
+                    "im",
+                    "mentions",
+                    "docs",
+                    "comments",
+                    "wiki",
+                    "base",
+                    "tasks",
+                    "minutes",
+                    "vc",
+                    "mail",
+                    "okr",
+                    "approval",
+                    "report_cache",
+                    "code_activity",
+                    "ai_sessions"
+                  ]
+                },
+                "minItems": 1,
+                "uniqueItems": true
+              }
+            }
+          }
+        },
+        "candidate.list_many": {
+          "type": "object",
+          "required": ["available"],
+          "additionalProperties": false,
+          "properties": {
+            "available": {"type": "boolean"},
+            "max_domains": {
+              "type": "integer",
+              "minimum": 2,
+              "maximum": 16
+            }
+          }
+        },
+        "candidate.fetch": {
+          "type": "object",
+          "required": ["available"],
+          "additionalProperties": false,
+          "properties": {
+            "available": {"type": "boolean"},
+            "file_output": {"type": "boolean"},
+            "parallel_safe": {"type": "boolean"},
+            "max_parallelism": {
+              "type": "integer",
+              "minimum": 2,
+              "maximum": 16
+            }
+          }
+        },
+        "candidate.fetch_many": {
+          "type": "object",
+          "required": ["available"],
+          "additionalProperties": false,
+          "properties": {
+            "available": {"type": "boolean"},
+            "max_batch_size": {
+              "type": "integer",
+              "minimum": 2,
+              "maximum": 100
+            }
+          }
+        },
+        "report.create": {
+          "type": "object",
+          "required": ["available"],
+          "additionalProperties": false,
+          "properties": {"available": {"type": "boolean"}}
+        },
+        "report.fetch": {
+          "type": "object",
+          "required": ["available"],
+          "additionalProperties": false,
+          "properties": {"available": {"type": "boolean"}}
+        },
+        "template.fetch": {
+          "type": "object",
+          "required": ["available"],
+          "additionalProperties": false,
+          "properties": {"available": {"type": "boolean"}}
+        },
+        "template.upsert": {
+          "type": "object",
+          "required": ["available"],
+          "additionalProperties": false,
+          "properties": {"available": {"type": "boolean"}}
+        },
+        "template.delete": {
+          "type": "object",
+          "required": ["available"],
+          "additionalProperties": false,
+          "properties": {"available": {"type": "boolean"}}
+        }
+      }
+    }
+  }
+}
