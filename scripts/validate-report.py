@@ -7,7 +7,7 @@ import re
 import sys
 from pathlib import Path
 
-from contracts import PROFILE_SECTIONS
+from contracts import PROFILE_SECTIONS, STATUS_LABELS
 from source_refs import SOURCE_TARGET, is_valid_source_ref
 from template_profiles import field_labels, load as load_template, section_settings
 from value_contracts import parse_aware_datetime as parse_time_contract
@@ -28,6 +28,28 @@ COVERAGE_NOTICE = re.compile(
 FORBIDDEN_CLASS = re.compile(
     r"\b(?:private|chatter)\b|私人材料|私人标题|私人摘要|闲聊材料|闲聊标题|闲聊摘要",
     re.IGNORECASE,
+)
+MODEL_SECTION_KINDS = {
+    "summary": "work",
+    "workstreams": "work",
+    "risks": "work",
+    "next_actions": "work",
+    "uncertain": "uncertain",
+}
+FIELD_OBLIGATIONS = (
+    ("output", (("summary", "result"), ("workstreams", "result"))),
+    ("status", (("workstreams", "status"),)),
+    ("decision", (("summary", "decision"), ("workstreams", "decision"))),
+    (
+        "impact",
+        (
+            ("summary", "impact"),
+            ("workstreams", "impact"),
+            ("risks", "impact"),
+        ),
+    ),
+    ("risk", (("risks", "risk"),)),
+    ("next_action", (("next_actions", "action"),)),
 )
 
 
@@ -55,6 +77,141 @@ def parse_aware_datetime(value, label, errors):
         errors.append(f"{label}不是有效的 ISO 8601 时间：{value}")
         return None
     return parsed
+
+
+def has_text(value):
+    return isinstance(value, str) and bool(value.strip())
+
+
+def model_section_items(model):
+    result = {section: [] for section in MODEL_SECTION_KINDS}
+    if not isinstance(model, dict):
+        return result
+    for section in result:
+        values = model.get(section)
+        if not isinstance(values, list):
+            continue
+        for item in values:
+            if not isinstance(item, dict):
+                continue
+            evidence_ids = item.get("evidence_ids")
+            normalized = (
+                [value.strip() for value in evidence_ids if has_text(value)]
+                if isinstance(evidence_ids, list)
+                else []
+            )
+            result[section].append((item, normalized))
+    return result
+
+
+def obligation_required(field, value):
+    if field == "status":
+        return value in STATUS_LABELS
+    return has_text(value)
+
+
+def obligation_satisfied(cluster_id, field, value, paths, section_items):
+    for section, model_field in paths:
+        for item, evidence_ids in section_items[section]:
+            if cluster_id not in evidence_ids:
+                continue
+            if field == "status":
+                if item.get(model_field) == value:
+                    return True
+            elif has_text(item.get(model_field)):
+                return True
+    return False
+
+
+def obligation_token(cluster_id, field, value, paths):
+    subject = (
+        f"{cluster_id}.{field}={value}"
+        if field == "status"
+        else f"{cluster_id}.{field}"
+    )
+    targets = "|".join(f"{section}.{model_field}" for section, model_field in paths)
+    return f"{subject}->{targets}"
+
+
+def field_obligation_evaluation(model, ledger):
+    """Return deterministic field/section coverage without inspecting prose wording."""
+    section_items = model_section_items(model)
+    required = []
+    satisfied = []
+    missing = []
+    failures = []
+    work_items = ledger.get("work") if isinstance(ledger, dict) else None
+    if isinstance(work_items, list):
+        for item in work_items:
+            if not isinstance(item, dict) or not has_text(item.get("cluster_id")):
+                continue
+            cluster_id = item["cluster_id"].strip()
+            for field, paths in FIELD_OBLIGATIONS:
+                value = item.get(field)
+                if not obligation_required(field, value):
+                    continue
+                token = obligation_token(cluster_id, field, value, paths)
+                required.append(token)
+                if obligation_satisfied(
+                    cluster_id,
+                    field,
+                    value,
+                    paths,
+                    section_items,
+                ):
+                    satisfied.append(token)
+                else:
+                    missing.append(token)
+                    failures.append(
+                        {
+                            "cluster_id": cluster_id,
+                            "field": field,
+                            "value": value,
+                            "paths": paths,
+                        }
+                    )
+    return {
+        "required": sorted(required),
+        "satisfied": sorted(satisfied),
+        "missing": sorted(missing),
+        "section_evidence": {
+            section: [evidence_ids for _, evidence_ids in items]
+            for section, items in section_items.items()
+        },
+        "failures": failures,
+    }
+
+
+def field_obligation_signature(model, ledger):
+    evaluation = field_obligation_evaluation(model, ledger)
+    return {
+        key: evaluation[key]
+        for key in ("required", "satisfied", "missing", "section_evidence")
+    }
+
+
+def obligation_error(failure):
+    cluster_id = failure["cluster_id"]
+    field = failure["field"]
+    value = failure["value"]
+    if field == "output":
+        target = "summary.result 或 workstreams.result"
+    elif field == "status":
+        target = "workstreams.status"
+    elif field == "decision":
+        target = "summary.decision 或 workstreams.decision"
+    elif field == "impact":
+        target = "summary.impact、workstreams.impact 或 risks.impact"
+    elif field == "risk":
+        target = "risks.risk"
+    else:
+        target = "next_actions.action"
+    subject = (
+        f"{cluster_id}.{field}={value}"
+        if field == "status"
+        else f"{cluster_id}.{field}"
+    )
+    return f"报告模型字段未覆盖：{subject} 必须出现在 {target}"
 
 
 def parse_source_registry(markdown, errors):
@@ -219,14 +376,7 @@ def validate_model_coverage(model, ledger):
             ledger_ids[name].add(cluster_id)
 
     report_ids = {"work": set(), "uncertain": set()}
-    section_kinds = {
-        "summary": "work",
-        "workstreams": "work",
-        "risks": "work",
-        "next_actions": "work",
-        "uncertain": "uncertain",
-    }
-    for section, kind in section_kinds.items():
+    for section, kind in MODEL_SECTION_KINDS.items():
         items = model.get(section)
         if not isinstance(items, list):
             errors.append(f"报告模型缺少数组：{section}")
@@ -275,6 +425,11 @@ def validate_model_coverage(model, ledger):
             errors.append(
                 f"报告模型未覆盖 {kind} 账本条目：" + "、".join(missing)
             )
+    obligation_evaluation = field_obligation_evaluation(model, ledger)
+    errors.extend(
+        obligation_error(failure)
+        for failure in obligation_evaluation["failures"]
+    )
     return {"ok": not errors, "errors": errors}
 
 

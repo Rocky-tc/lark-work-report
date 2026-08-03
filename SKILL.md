@@ -29,12 +29,13 @@ description: Use when 用户要通过任意可用的飞书连接器、MCP、CLI 
      --request-file <request.json> \
      --period weekly --relative previous \
      --reference 2026-07-27 \
-     --snapshot 2026-07-27T10:00:00+08:00
+     --snapshot 2026-07-27T10:00:00+08:00 \
+     --agent-view
    ```
 
-   `request.json` 字段只允许 `schema_version=1`、`request`、`scope`、`exclusions`、`emphasis`；`request` 保存用户原始请求。自定义周期增加 `--start`、`--end`；可重复传 `--domain`。月报已有可靠周报缓存时传 `--monthly-cache present`；深度模式传 `--depth deep`；仅本次使用模板时传 `--template-file`。保存返回的 `run_dir`、`plan_file` 和 `execution_graph_file`。执行图是代码生成并校验的唯一计划：语义节点固定为分类、批量提取和一次综合，不由 Agent 临时增删或重新规划。
+   `request.json` 只允许 `schema_version=1`、`request`、`scope`、`exclusions`、`emphasis`。自定义周期增加 `--start`、`--end`；可重复传 `--domain`；月报缓存、深度模式和一次性模板分别使用 `--monthly-cache present`、`--depth deep`、`--template-file`。保存返回的 `run_dir` 和动作视图；完整计划与执行图留在受管目录，由接口生成并校验，不修改。
 
-2. **确认身份、模板并列举元数据。** 读取 `run-plan.json`。按计划执行 `identity_call` 和可选 `template_call`，分别写入 `identity.json` 与经过校验的 `template-profile.json`。执行每个 `metadata_wave` 前用 `record-batch` 原子预留调用；同波并行、跨波顺序执行。规划器已经按收益与适配器覆盖关系消除重复查询。候选只含元数据，写入 `<run-dir>/candidates.json`。
+2. **确认身份、模板并列举元数据。** 按动作视图执行 `identity_call` 和可选 `template_call`，分别写入 `identity.json` 与经过校验的 `template-profile.json`。`metadata_waves` 外层顺序、内层并行；各调用共用 `period.start/end`。每波前用 `record-batch` 原子预留调用。候选只含元数据，写入 `<run-dir>/candidates.json`；不要读取私有 `run-plan.json`。
 
 3. **过滤、去重并进入阶段接口。** 分类前完整读取本阶段唯一必读的 [classification-contract.md](references/classification-contract.md)。
 
@@ -51,7 +52,7 @@ description: Use when 用户要通过任意可用的飞书连接器、MCP、CLI 
    python3 scripts/stage-io.py next --run-dir <run-dir>
    ```
 
-   每轮只完整读取返回的 `contract_file` 和 `packet_file`；契约路径只会指向 [fetch-contract.md](references/fetch-contract.md)、[extraction-contract.md](references/extraction-contract.md) 或 [synthesis-contract.md](references/synthesis-contract.md)，不得提前合并读取。宿主支持新上下文时，`context_mode=fresh` 的 `extract` / `synthesize` 必须使用相同模型在无历史上下文中执行，只带当前契约与包。把符合 `result_schema_file` 的语义结果写入 `<run-dir>`，用 `next` 私下返回的包 ID 提交：
+   每轮完整读取返回的 `packet_file`。当前会话只在 `contract_digest` 首次出现时完整读取 `contract_file`，相同摘要后续复用已读契约；契约只会是 [fetch-contract.md](references/fetch-contract.md)、[extraction-contract.md](references/extraction-contract.md) 或 [synthesis-contract.md](references/synthesis-contract.md)，不得提前合并读取。`context_mode=fresh` 的独立模型调用仍须使用相同模型并携带当前完整契约与包。把符合 `result_schema_file` 的语义结果写入 `<run-dir>`，用 `next` 私下返回的包 ID 提交：
 
    ```bash
    python3 scripts/stage-io.py commit \
@@ -67,7 +68,7 @@ description: Use when 用户要通过任意可用的飞书连接器、MCP、CLI 
 
 4. **必要时增量修复。** 阶段提交若返回 `repair_packet` 和 `repair_schema`，只提交其中列出的 JSON 路径补丁；编译错误则使用 `repair-queue.json` 只重抓或重提取受影响项。不得重新处理已验证项。底层排错时才直接使用 `normalize-fetch-body.py`、`compile-evidence.py` 或 `finalize-run.py`。
 
-5. **交付并清理。** `complete` 返回的 `report_file` 已通过账本校验。创建文档后必须回读标题、五个正文章节、来源，以及存在访问缺口时的覆盖说明；创建与回读分别计一次外部调用。交付成功后执行：
+5. **交付并清理。** `complete` 返回的 `report_file` 已通过账本校验。若动作视图的 `delivery.mode=document` 且用户未要求只要草稿，使用其中的适配器依次执行 `create_operation` 与 `fetch_operation`；回读标题、五个正文章节、来源，以及存在访问缺口时的覆盖说明。`delivery.mode=markdown` 时直接交付同一文件。创建与回读分别计一次外部调用。交付成功后执行：
 
    ```bash
    python3 scripts/manage-run.py cleanup --run-dir <run-dir>
@@ -102,8 +103,7 @@ description: Use when 用户要通过任意可用的飞书连接器、MCP、CLI 
 | 证据字段、冲突裁决或聚类失败 | [evidence-model.md](references/evidence-model.md) |
 | 用户改变格式、比较口径或周期粒度 | [report-profiles.md](references/report-profiles.md) |
 | 用户提供旧报告/模板、改变或重置个人格式 | [template-profiles.md](references/template-profiles.md) |
-| 阶段包、短引用或结果提交被拒绝 | [stage-io.md](references/stage-io.md) |
-| 需要记录真实用量或执行同数据同模型 A/B | [stage-io.md](references/stage-io.md) |
+| 阶段提交、短引用、真实用量或同数据同模型 A/B | [stage-io.md](references/stage-io.md) |
 | 报告模型被定稿器拒绝 | [report-rendering.md](references/report-rendering.md) |
 | 文档创建、回读或验收失败 | [output-contract.md](references/output-contract.md) |
 

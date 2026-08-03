@@ -2,7 +2,7 @@
 
 `stage-io` 是标准运行的唯一阶段入口。完整机器状态留在受管目录，Agent 每次只读取 `next` 返回的当前 `contract_file`、`packet_file`，并在宿主支持时用 `result_schema_file` 约束结果。
 
-`prepare-run` 同时生成紧凑的 `execution-graph.json`。图固定分类、批量提取、一次综合三个语义节点，以及抓取、编译、确定性回填、渲染和完成等非语义节点。运行时按 `stage_runtime_order` 选择下一节点并校验图摘要；图只能表达现有处理路径，不能增加语义节点、把综合改成多次，或取消批量提取。
+`prepare-run --agent-view` 只向宿主返回 `run_dir`、公共周期、身份/模板调用、元数据波次和最终交付动作；完整 `run-plan.json` 与紧凑 `execution-graph.json` 留在受管目录，不进入 Agent 上下文。图固定分类、批量提取、一次综合三个语义节点，以及抓取、编译、确定性回填、渲染和完成等非语义节点。运行时按 `stage_runtime_order` 选择下一节点并校验图摘要；图只能表达现有处理路径，不能增加语义节点、把综合改成多次，或取消批量提取。
 
 ```bash
 python3 scripts/stage-io.py next --run-dir <run-dir>

@@ -8,4 +8,4 @@
 - 适配器明确返回无权限、已删除或不可访问时，提交 `item_ref`、`outcome=access_gap`、`reason`；不得把错误文本伪装成正文。
 - 同包只在 `parallel=true` 时并行。提交前必须恰好覆盖所有批次和 item。
 
-结果只写语义载荷；使用 `stage-io.py commit --package-id <next 返回值>` 私下关联阶段包。若宿主支持包内 `result_schema_file`，应以该 Schema 约束输出；本地接口仍执行完整校验。
+结果只含上述语义字段，并符合 `result_schema_file`；宿主不支持 Schema 时严格按上述字段构造。包 ID、输入摘要和提交由宿主私下处理，不写入结果。

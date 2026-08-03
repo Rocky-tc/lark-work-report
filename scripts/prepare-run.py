@@ -8,7 +8,13 @@ from pathlib import Path
 
 from contracts import SOURCE_PRIORITY
 import execution_graph
-from runtime_utils import emit_json, load_script, read_json, write_json_atomic
+from runtime_utils import (
+    emit_json,
+    load_script,
+    read_json,
+    write_json_atomic,
+    write_json_compact_atomic,
+)
 import request_context
 from template_profiles import load as load_template
 
@@ -286,6 +292,52 @@ def template_call(adapters, mode, template_file):
     }
 
 
+def delivery_action(adapters):
+    adapter = next(
+        (item for item in adapters if item["delivery_mode"] == "document"),
+        None,
+    )
+    if adapter is None:
+        return {"mode": "markdown"}
+    return {
+        "mode": "document",
+        "adapter_id": adapter["adapter_id"],
+        "create_operation": "report.create",
+        "fetch_operation": "report.fetch",
+    }
+
+
+def agent_view(run_dir, period, identity, template, delivery, waves, unassigned):
+    return {
+        "schema_version": 1,
+        "run_dir": str(run_dir),
+        "period": {
+            "profile": period["routed_profile"],
+            "start": period["start"],
+            "end": period["end"],
+            "timezone": period["timezone"],
+            "snapshot_time": period["snapshot_time"],
+            "is_partial": period["is_partial"],
+            "title": period["title_period"],
+        },
+        "identity_call": identity,
+        "template_call": template,
+        "delivery": delivery,
+        "metadata_waves": [
+            [
+                {
+                    "adapter_id": call["adapter_id"],
+                    "operation": call["operation"],
+                    "domains": call["domains"],
+                }
+                for call in wave["calls"]
+            ]
+            for wave in waves
+        ],
+        "unassigned_domains": unassigned,
+    }
+
+
 def prepare(args):
     period = RESOLVE_PERIOD.resolve(
         period=args.period,
@@ -315,6 +367,7 @@ def prepare(args):
         args.template_mode,
         args.template_file,
     )
+    planned_delivery = delivery_action(adapters)
     profile = run_profile(period, args.depth, args.monthly_cache)
     supplied_request_context = (
         request_context.normalize(
@@ -352,6 +405,7 @@ def prepare(args):
             "requested_domains": domains,
             "unassigned_domains": unassigned,
             "identity_call": planned_identity,
+            "delivery": planned_delivery,
             "adapters": [compact_adapter(adapter) for adapter in adapters],
             "metadata_waves": waves,
             "request_context": {
@@ -365,10 +419,21 @@ def prepare(args):
             execution_graph.build(plan),
         )
         plan["execution_graph"] = graph_descriptor
-        write_json_atomic(plan_file, plan)
+        write_json_compact_atomic(plan_file, plan)
     except Exception:
         MANAGE_RUN.cleanup(str(run_dir))
         raise
+
+    if args.agent_view:
+        return agent_view(
+            run_dir,
+            period,
+            planned_identity,
+            planned_template,
+            planned_delivery,
+            waves,
+            unassigned,
+        )
 
     return {
         "run_dir": str(run_dir),
@@ -427,6 +492,11 @@ def build_parser():
         default="auto",
     )
     template_group.add_argument("--template-file")
+    parser.add_argument(
+        "--agent-view",
+        action="store_true",
+        help="Return only the actions the host must execute; keep run-plan private",
+    )
     return parser
 
 

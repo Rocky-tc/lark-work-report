@@ -254,9 +254,9 @@ class StageIoTests(unittest.TestCase):
                         "evidence_refs": ["w0"],
                     }
                 ],
-                workstreams=[],
+                workstreams=[{"evidence_refs": ["w0"]}],
                 risks=[],
-                next_actions=[],
+                next_actions=[{"evidence_refs": ["w0"]}],
                 uncertain=[],
             ),
             "synthesis-result.json",
@@ -271,8 +271,9 @@ class StageIoTests(unittest.TestCase):
         self.assertNotIn("coverage", model)
         report = (self.run_dir / "report.md").read_text(encoding="utf-8")
         self.assertIn("# 张三个人周报｜2026-07-20 至 2026-07-26", report)
+        self.assertIn("[W1][W1]", report)
         self.assertIn(
-            "[工作来源](https://example.com/docs/long-document-reference)",
+            "[W1]: https://example.com/docs/long-document-reference",
             report,
         )
         self.assertNotIn("## 来源与覆盖", report)
@@ -460,6 +461,7 @@ class StageIoTests(unittest.TestCase):
         )
 
     def test_extraction_repackages_batches_and_exactly_deduplicates_content(self):
+        duplicate_content = "x" * 2_200_000
         queue_path = self.run_dir / "fetch-queue.json"
         queue = json.loads(queue_path.read_text(encoding="utf-8"))
         second_id = "adapter-a:docs:second-document"
@@ -513,7 +515,7 @@ class StageIoTests(unittest.TestCase):
                                 {
                                     "item_ref": "i0",
                                     "content_type": "text",
-                                    "content": "两批完全相同的完整正文。",
+                                    "content": duplicate_content,
                                     "context": {"section": "结果"},
                                 }
                             ],
@@ -526,10 +528,144 @@ class StageIoTests(unittest.TestCase):
         self.assertEqual(state["stage"], "extract")
         packet = self.load_packet(state)
         payload = packet["payload"]
+        semantic_bytes = sum(
+            (self.run_dir / "semantic-bodies" / f"fetch-000{index}.json").stat().st_size
+            for index in (1, 2)
+        )
+        self.assertGreater(semantic_bytes, 4 * 1024 * 1024)
+        self.assertLessEqual(Path(state["packet_file"]).stat().st_size, 4 * 1024 * 1024)
         self.assertEqual(len(payload["items"]), 2)
         self.assertEqual(len(payload["content_blobs"]), 1)
         self.assertEqual(len(payload["context_blobs"]), 1)
+        self.assertEqual(
+            [item["metadata"]["title"] for item in payload["items"]],
+            ["工作报告优化", "第二份工作报告优化"],
+        )
         self.assertNotIn("batches", payload)
+
+    def test_first_indivisible_extraction_batch_is_emitted_when_oversized(self):
+        state = self.next()
+        packet = self.load_packet(state)
+        committed = self.commit_private(
+            {
+                "batches": [
+                    {
+                        "batch_ref": "b0",
+                        "results": [
+                            {
+                                "item_ref": "i0",
+                                "content_type": "text",
+                                "content": "x" * (4 * 1024 * 1024),
+                                "context": {},
+                            }
+                        ],
+                    }
+                ]
+            },
+            "oversized-fetch-result.json",
+            state,
+        )
+        state = committed["next"]
+        self.assertEqual(state["stage"], "extract")
+        self.assertGreater(Path(state["packet_file"]).stat().st_size, 4 * 1024 * 1024)
+        payload = self.load_packet(state)["payload"]
+        self.assertEqual(len(payload["items"]), 1)
+        self.assertEqual(len(payload["content_blobs"]), 1)
+
+    def test_extraction_batching_keeps_the_item_limit_between_batches(self):
+        queue_path = self.run_dir / "fetch-queue.json"
+        queue = json.loads(queue_path.read_text(encoding="utf-8"))
+        base = queue["candidate_index"][self.global_id]
+        second_ids = []
+        second_candidates = []
+        for index in range(100):
+            global_id = f"adapter-a:docs:item-{index:03d}"
+            candidate = {
+                **base,
+                "id": f"item-{index:03d}",
+                "source_ref": f"https://example.com/docs/item-{index:03d}",
+                "title": f"工作项 {index:03d}",
+            }
+            queue["candidate_index"][global_id] = candidate
+            second_ids.append(global_id)
+            second_candidates.append({"global_id": global_id, **candidate})
+        queue["fetch_batches"].append(
+            {
+                "batch_id": "fetch-0002",
+                "adapter_id": "adapter-a",
+                "operation": "candidate.fetch",
+                "parallelism": 1,
+                "file_output": False,
+                "body_file": "fetch-results/fetch-0002.json",
+                "semantic_file": "semantic-bodies/fetch-0002.json",
+                "evidence_file": "evidence-parts/fetch-0002.json",
+                "request_file": "fetch-requests/fetch-0002.json",
+                "global_ids": second_ids,
+            }
+        )
+        queue["fetch_waves"].append(
+            {"wave": 2, "parallel": False, "batch_ids": ["fetch-0002"]}
+        )
+        queue["included_counts"]["work"] = 101
+        write_json(queue_path, queue)
+        write_json(
+            self.run_dir / "fetch-requests" / "fetch-0002.json",
+            {
+                "schema_version": 1,
+                "batch_id": "fetch-0002",
+                "adapter_id": "adapter-a",
+                "operation": "candidate.fetch",
+                "items": second_candidates,
+            },
+        )
+
+        state = self.next()
+        packet = self.load_packet(state)
+        state = self.commit_private(
+            {
+                "batches": [
+                    {
+                        "batch_ref": "b0",
+                        "results": [
+                            {
+                                "item_ref": "i0",
+                                "content_type": "text",
+                                "content": "第一批正文",
+                                "context": {},
+                            }
+                        ],
+                    }
+                ]
+            },
+            "limit-fetch-1.json",
+            state,
+        )["next"]
+        packet = self.load_packet(state)
+        self.assertEqual(len(packet["payload"]["batches"][0]["items"]), 100)
+        state = self.commit_private(
+            {
+                "batches": [
+                    {
+                        "batch_ref": "b0",
+                        "results": [
+                            {
+                                "item_ref": item["item_ref"],
+                                "content_type": "text",
+                                "content": "共享正文",
+                                "context": {},
+                            }
+                            for item in packet["payload"]["batches"][0]["items"]
+                        ],
+                    }
+                ]
+            },
+            "limit-fetch-2.json",
+            state,
+        )["next"]
+        self.assertEqual(state["stage"], "extract")
+        payload = self.load_packet(state)["payload"]
+        self.assertEqual(len(payload["items"]), 1)
+        self.assertEqual(payload["items"][0]["metadata"]["title"], "工作报告优化")
 
     def test_synthesis_repair_replaces_only_invalid_item(self):
         committed = self.complete_extract()
@@ -545,9 +681,9 @@ class StageIoTests(unittest.TestCase):
                         "evidence_refs": ["w9"],
                     }
                 ],
-                "workstreams": [],
+                "workstreams": [{"evidence_refs": ["w0"]}],
                 "risks": [],
-                "next_actions": [],
+                "next_actions": [{"evidence_refs": ["w0"]}],
                 "uncertain": [],
             },
         )
@@ -665,9 +801,9 @@ class StageIoTests(unittest.TestCase):
             self.stage_result(
                 packet,
                 summary=[{"evidence_refs": ["w0"]}],
-                workstreams=[],
+                workstreams=[{"evidence_refs": ["w0"]}],
                 risks=[],
-                next_actions=[],
+                next_actions=[{"evidence_refs": ["w0"]}],
                 uncertain=[],
             ),
             "direct-synthesis-result.json",

@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 
 import execution_graph
-from runtime_utils import read_json, write_json_compact_atomic
+from runtime_utils import load_script, read_json, write_json_compact_atomic
 from value_contracts import require_text
 
 
@@ -25,6 +25,9 @@ USAGE_FILE_FIELDS = {
 }
 METRICS_FILE = "stage-metrics.json"
 RUN_USAGE_FILE = "run-usage.json"
+SCRIPT_DIR = Path(__file__).resolve().parent
+REPORT_HYDRATION = load_script(SCRIPT_DIR, "report_hydration.py")
+VALIDATE_REPORT = load_script(SCRIPT_DIR, "validate-report.py")
 
 
 def strict_object(value, allowed, label):
@@ -250,9 +253,24 @@ def dataset_fingerprint(run_dir):
 
 
 def quality_signature(run_dir):
+    run_dir = Path(run_dir)
     ledger = optional_json(run_dir, "ledger.json") or {}
     audit = optional_json(run_dir, "extraction-audit.json") or {}
-    report = Path(run_dir) / "report.md"
+    report = run_dir / "report.md"
+    model = optional_json(run_dir, "report-model.json")
+    if isinstance(model, dict) and model.get("schema_version") in {4, 5}:
+        model = REPORT_HYDRATION.hydrate(
+            model,
+            ledger,
+            optional_json(run_dir, "run-plan.json"),
+            optional_json(run_dir, "identity.json"),
+            audit,
+            allow_direct_fill=optional_json(
+                run_dir,
+                "template-profile.json",
+            )
+            is None,
+        )
     source_refs = []
     for group in ("work", "uncertain"):
         for item in ledger.get(group, []) if isinstance(ledger, dict) else []:
@@ -274,6 +292,10 @@ def quality_signature(run_dir):
         ),
         "outcome_counts": audit.get("outcome_counts"),
         "source_refs": sorted(set(source_refs)),
+        "field_obligations": VALIDATE_REPORT.field_obligation_signature(
+            model,
+            ledger,
+        ),
     }
 
 

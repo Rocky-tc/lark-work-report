@@ -42,6 +42,46 @@ DEFAULT_LEDGER = {
 }
 
 
+OBLIGATION_LEDGER = {
+    "schema_version": 2,
+    "snapshot": "2026-07-26T18:00:00+08:00",
+    "work": [
+        {
+            "cluster_id": "cluster-work-1",
+            "source_ref": "https://example.com/work/1",
+            "source_refs": ["https://example.com/work/1"],
+            "status": "completed",
+            "output": "完成报告优化",
+            "impact": "减少重复上下文",
+            "decision": "保留确定性回填",
+            "risk": "旧宿主缺少结构化输出",
+            "next_action": "观察真实运行效果",
+        }
+    ],
+    "uncertain": [],
+}
+
+
+OBLIGATION_REPORT = """\
+# 张三个人周报｜2026-07-20 至 2026-07-26
+
+## 本周摘要
+- 完成报告优化；影响：减少重复上下文；决策：保留确定性回填。[工作来源](https://example.com/work/1)
+
+## 工作流进展与结果
+- **报告 Skill｜已完成**：完成报告优化；影响：减少重复上下文；决策：保留确定性回填。[工作来源](https://example.com/work/1)
+
+## 风险与需协助事项
+- 旧宿主缺少结构化输出。[工作来源](https://example.com/work/1)
+
+## 下周重点
+- 观察真实运行效果。[工作来源](https://example.com/work/1)
+
+## 待复核
+- 无
+"""
+
+
 def coverage_model(
     *,
     start="2026-07-20T00:00:00+08:00",
@@ -68,6 +108,54 @@ def coverage_model(
             "uncertain_count": uncertain_count,
         },
     }
+
+
+def obligation_model():
+    model = coverage_model(
+        domains=["文档"],
+        gaps=[],
+        work_count=1,
+        uncertain_count=0,
+    )
+    model.update(
+        {
+            "schema_version": 3,
+            "profile": "weekly",
+            "title": "张三个人周报｜2026-07-20 至 2026-07-26",
+            "summary": [
+                {
+                    "result": "完成报告优化",
+                    "impact": "减少重复上下文",
+                    "decision": "保留确定性回填",
+                    "evidence_ids": ["cluster-work-1"],
+                }
+            ],
+            "workstreams": [
+                {
+                    "name": "报告 Skill",
+                    "status": "completed",
+                    "result": "完成报告优化",
+                    "impact": "减少重复上下文",
+                    "decision": "保留确定性回填",
+                    "evidence_ids": ["cluster-work-1"],
+                }
+            ],
+            "risks": [
+                {
+                    "risk": "旧宿主缺少结构化输出",
+                    "evidence_ids": ["cluster-work-1"],
+                }
+            ],
+            "next_actions": [
+                {
+                    "action": "观察真实运行效果",
+                    "evidence_ids": ["cluster-work-1"],
+                }
+            ],
+            "uncertain": [],
+        }
+    )
+    return model
 
 
 def run_validator(
@@ -109,6 +197,122 @@ class ValidateReportTests(unittest.TestCase):
         payload = json.loads(result.stdout)
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["errors"], [])
+
+    def test_next_action_cannot_be_covered_only_by_summary(self):
+        model = obligation_model()
+        model["next_actions"] = []
+        report = OBLIGATION_REPORT.replace(
+            "- 观察真实运行效果。[工作来源](https://example.com/work/1)",
+            "- 无",
+        )
+        result = run_validator(report, ledger=OBLIGATION_LEDGER, model=model)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "报告模型字段未覆盖：cluster-work-1.next_action 必须出现在 "
+            "next_actions.action",
+            json.loads(result.stdout)["errors"],
+        )
+
+    def test_all_meaningful_ledger_fields_in_matching_sections_pass(self):
+        result = run_validator(
+            OBLIGATION_REPORT,
+            ledger=OBLIGATION_LEDGER,
+            model=obligation_model(),
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_risk_cannot_be_covered_only_by_summary(self):
+        model = obligation_model()
+        model["risks"] = []
+        report = OBLIGATION_REPORT.replace(
+            "- 旧宿主缺少结构化输出。[工作来源](https://example.com/work/1)",
+            "- 无",
+        )
+        result = run_validator(report, ledger=OBLIGATION_LEDGER, model=model)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "报告模型字段未覆盖：cluster-work-1.risk 必须出现在 risks.risk",
+            json.loads(result.stdout)["errors"],
+        )
+
+    def test_decision_requires_a_decision_field_in_a_result_section(self):
+        model = obligation_model()
+        del model["summary"][0]["decision"]
+        del model["workstreams"][0]["decision"]
+        report = OBLIGATION_REPORT.replace(
+            "；决策：保留确定性回填",
+            "",
+        )
+        result = run_validator(report, ledger=OBLIGATION_LEDGER, model=model)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "报告模型字段未覆盖：cluster-work-1.decision 必须出现在 "
+            "summary.decision 或 workstreams.decision",
+            json.loads(result.stdout)["errors"],
+        )
+
+    def test_output_requires_a_result_field_in_a_result_section(self):
+        model = obligation_model()
+        del model["summary"][0]["result"]
+        del model["workstreams"][0]["result"]
+        result = run_validator(
+            OBLIGATION_REPORT,
+            ledger=OBLIGATION_LEDGER,
+            model=model,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "报告模型字段未覆盖：cluster-work-1.output 必须出现在 "
+            "summary.result 或 workstreams.result",
+            json.loads(result.stdout)["errors"],
+        )
+
+    def test_known_status_requires_a_matching_workstream_status(self):
+        model = obligation_model()
+        model["workstreams"] = []
+        report = OBLIGATION_REPORT.replace(
+            "- **报告 Skill｜已完成**：完成报告优化；影响：减少重复上下文；"
+            "决策：保留确定性回填。[工作来源](https://example.com/work/1)",
+            "- 无",
+        )
+        result = run_validator(report, ledger=OBLIGATION_LEDGER, model=model)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "报告模型字段未覆盖：cluster-work-1.status=completed 必须出现在 "
+            "workstreams.status",
+            json.loads(result.stdout)["errors"],
+        )
+
+    def test_workstream_status_must_match_its_ledger_evidence(self):
+        model = obligation_model()
+        model["workstreams"][0]["status"] = "in_progress"
+        result = run_validator(
+            OBLIGATION_REPORT,
+            ledger=OBLIGATION_LEDGER,
+            model=model,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "报告模型字段未覆盖：cluster-work-1.status=completed 必须出现在 "
+            "workstreams.status",
+            json.loads(result.stdout)["errors"],
+        )
+
+    def test_impact_requires_an_impact_field_in_a_fact_section(self):
+        model = obligation_model()
+        del model["summary"][0]["impact"]
+        del model["workstreams"][0]["impact"]
+        report = OBLIGATION_REPORT.replace(
+            "；影响：减少重复上下文",
+            "",
+        )
+        result = run_validator(report, ledger=OBLIGATION_LEDGER, model=model)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "报告模型字段未覆盖：cluster-work-1.impact 必须出现在 "
+            "summary.impact、workstreams.impact 或 risks.impact",
+            json.loads(result.stdout)["errors"],
+        )
 
     def test_missing_required_section_fails(self):
         report = VALID_WEEKLY.replace(

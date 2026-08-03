@@ -84,6 +84,23 @@ def file_digest(path):
     return "sha256:" + hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+def model_packet(stage, payload):
+    return {
+        "schema_version": PACKET_SCHEMA_VERSION,
+        "stage": stage,
+        "contract_version": CONTRACT_VERSION,
+        "payload": payload,
+    }
+
+
+def compact_json_bytes(value):
+    return len(
+        (json.dumps(value, ensure_ascii=False, separators=(",", ":")) + "\n").encode(
+            "utf-8"
+        )
+    )
+
+
 def checked_relative(run_dir, value, label):
     value = require_text(value, label)
     path = Path(value)
@@ -233,6 +250,8 @@ def object_schema(properties, required):
 
 
 def reference_schema(value):
+    if isinstance(value, dict):
+        return value
     return {"enum": value} if isinstance(value, list) else {"const": value}
 
 
@@ -285,27 +304,21 @@ def extraction_record_schema():
 def extract_item_schema(item_ref, record_schema=None):
     ref = reference_schema(item_ref)
     record_schema = record_schema or extraction_record_schema()
-    evidence = [
-        object_schema(
-            {
-                "item_ref": ref,
-                "outcome": {"const": outcome},
-                "record": record_schema,
-            },
-            ["item_ref", "outcome", "record"],
-        )
-        for outcome in sorted(EVIDENCE_OUTCOMES)
-    ]
-    discard = [
-        object_schema(
-            {
-                "item_ref": ref,
-                "outcome": {"const": outcome},
-            },
-            ["item_ref", "outcome"],
-        )
-        for outcome in sorted(DISCARD_OUTCOMES)
-    ]
+    evidence = object_schema(
+        {
+            "item_ref": ref,
+            "outcome": {"enum": sorted(EVIDENCE_OUTCOMES)},
+            "record": record_schema,
+        },
+        ["item_ref", "outcome", "record"],
+    )
+    discard = object_schema(
+        {
+            "item_ref": ref,
+            "outcome": {"enum": sorted(DISCARD_OUTCOMES)},
+        },
+        ["item_ref", "outcome"],
+    )
     gap = object_schema(
         {
             "item_ref": ref,
@@ -314,7 +327,7 @@ def extract_item_schema(item_ref, record_schema=None):
         },
         ["item_ref", "outcome", "reason"],
     )
-    return {"oneOf": [*evidence, *discard, gap]}
+    return {"oneOf": [evidence, discard, gap]}
 
 
 def synthesis_item_schema(section):
@@ -335,14 +348,26 @@ def synthesis_item_schema(section):
 def stage_result_schema(stage, payload):
     if stage == "fetch":
         batches = []
-        for batch in payload["batches"]:
+        definitions = {}
+        for batch_index, batch in enumerate(payload["batches"]):
             properties = {"batch_ref": {"const": batch["batch_ref"]}}
             required = ["batch_ref"]
             if batch.get("output", {}).get("mode") != "managed_file":
-                prefix = [
-                    fetch_item_schema(item["item_ref"])
-                    for item in batch["items"]
-                ]
+                compact_items = len(batch["items"]) > 1
+                if compact_items:
+                    definition = f"fetch_batch_{batch_index}_item"
+                    definitions[definition] = fetch_item_schema(
+                        [item["item_ref"] for item in batch["items"]]
+                    )
+                    prefix = [
+                        {"$ref": f"#/$defs/{definition}"}
+                        for _ in batch["items"]
+                    ]
+                else:
+                    prefix = [
+                        fetch_item_schema(item["item_ref"])
+                        for item in batch["items"]
+                    ]
                 properties["results"] = {
                     "type": "array",
                     "prefixItems": prefix,
@@ -352,7 +377,7 @@ def stage_result_schema(stage, payload):
                 }
                 required.append("results")
             batches.append(object_schema(properties, required))
-        return {
+        schema = {
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             **object_schema(
                 {
@@ -367,17 +392,27 @@ def stage_result_schema(stage, payload):
                 ["batches"],
             ),
         }
+        if definitions:
+            schema = {
+                "$schema": schema.pop("$schema"),
+                "$defs": definitions,
+                **schema,
+            }
+        return schema
     if stage == "extract":
         refs = [item["item_ref"] for item in payload["items"]]
         schema = {
             "$schema": "https://json-schema.org/draft/2020-12/schema",
-            "$defs": {"record": extraction_record_schema()},
+            "$defs": {
+                "item_ref": {"enum": refs},
+                "record": extraction_record_schema(),
+            },
             **object_schema(
                 {
                     "results": {
                         "type": "array",
                         "items": extract_item_schema(
-                            refs,
+                            {"$ref": "#/$defs/item_ref"},
                             {"$ref": "#/$defs/record"},
                         ),
                         "minItems": len(refs),
@@ -422,12 +457,7 @@ def write_packet(run_dir, stage, payload, receipt):
                 "digest": file_digest(graph_state["file"]),
             }
         )
-    unsigned = {
-        "schema_version": PACKET_SCHEMA_VERSION,
-        "stage": stage,
-        "contract_version": CONTRACT_VERSION,
-        "payload": payload,
-    }
+    unsigned = model_packet(stage, payload)
     digest = canonical_digest(unsigned)
     package_id = f"{stage}-{digest.removeprefix('sha256:')[:16]}"
     schema_path = run_dir / "stage-schemas" / f"{package_id}.json"
@@ -605,7 +635,7 @@ def model_metadata(candidate):
     }
 
 
-def extraction_packet(run_dir, candidates, batches, batch_ids, packet_number):
+def build_extraction_material(run_dir, candidates, batches, batch_ids, packet_number):
     content_refs = {}
     context_refs = {}
     content_blobs = {}
@@ -671,10 +701,8 @@ def extraction_packet(run_dir, candidates, batches, batch_ids, packet_number):
             }
         )
         guards.append(batch["semantic_path"])
-    return write_packet(
-        run_dir,
-        "extract",
-        {
+    return {
+        "payload": {
             "packet": packet_number,
             "parallel": False,
             "context": semantic_run_context(run_dir),
@@ -682,12 +710,35 @@ def extraction_packet(run_dir, candidates, batches, batch_ids, packet_number):
             "context_blobs": context_blobs,
             "items": items,
         },
-        {
+        "receipt": {
             "guards": guarded_files(guards),
             "layout": "flat",
             "item_map": global_item_map,
             "batches": receipt_batches,
         },
+    }
+
+
+def extraction_packet(
+    run_dir,
+    candidates,
+    batches,
+    batch_ids,
+    packet_number,
+    material=None,
+):
+    material = material or build_extraction_material(
+        run_dir,
+        candidates,
+        batches,
+        batch_ids,
+        packet_number,
+    )
+    return write_packet(
+        run_dir,
+        "extract",
+        material["payload"],
+        material["receipt"],
     )
 
 
@@ -839,10 +890,9 @@ def materialize_gap_only_batches(run_dir, batches):
         invalidate(run_dir)
 
 
-def next_extraction_group(batches):
+def next_extraction_group(run_dir, candidates, batches, packet_number):
     selected = []
-    total_items = 0
-    total_bytes = 0
+    selected_material = None
     for batch_id, batch in batches.items():
         if batch["evidence_path"].is_file():
             continue
@@ -852,17 +902,25 @@ def next_extraction_group(batches):
             raise ValueError("normalized fetch body is invalid")
         if not items:
             continue
-        item_count = len(items)
-        byte_count = batch["semantic_path"].stat().st_size
+        material = build_extraction_material(
+            run_dir,
+            candidates,
+            batches,
+            [*selected, batch_id],
+            packet_number,
+        )
+        item_count = len(material["payload"]["items"])
+        packet_bytes = compact_json_bytes(
+            model_packet("extract", material["payload"])
+        )
         if selected and (
-            total_items + item_count > EXTRACT_MAX_ITEMS
-            or total_bytes + byte_count > EXTRACT_MAX_BYTES
+            item_count > EXTRACT_MAX_ITEMS
+            or packet_bytes > EXTRACT_MAX_BYTES
         ):
             break
         selected.append(batch_id)
-        total_items += item_count
-        total_bytes += byte_count
-    return selected
+        selected_material = material
+    return selected, selected_material
 
 
 def next_stage(run_dir_value):
@@ -892,17 +950,24 @@ def next_stage(run_dir_value):
                     )
         elif node_id == "extract":
             materialize_gap_only_batches(run_dir, batches)
-            pending = next_extraction_group(batches)
+            completed = sum(
+                batch["evidence_path"].is_file() for batch in batches.values()
+            )
+            packet_number = completed + 1
+            pending, material = next_extraction_group(
+                run_dir,
+                candidates,
+                batches,
+                packet_number,
+            )
             if pending:
-                completed = sum(
-                    batch["evidence_path"].is_file() for batch in batches.values()
-                )
                 return extraction_packet(
                     run_dir,
                     candidates,
                     batches,
                     pending,
-                    completed + 1,
+                    packet_number,
+                    material,
                 )
         elif node_id == "compile":
             ledger_file = run_dir / "ledger.json"

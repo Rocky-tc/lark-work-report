@@ -46,6 +46,17 @@ def build(plan):
     metadata_waves = plan.get("metadata_waves", [])
     template_active = plan.get("template_call") is not None
     identity_active = plan.get("identity_call") is not None
+    delivery = plan.get("delivery")
+    if isinstance(delivery, dict):
+        delivery_active = delivery.get("mode") == "document"
+        delivery_adapter = delivery.get("adapter_id")
+    else:
+        delivery_active = any(
+            adapter.get("delivery_mode") == "document"
+            for adapter in plan.get("adapters", [])
+            if isinstance(adapter, dict)
+        )
+        delivery_adapter = None
     graph = {
         "schema_version": SCHEMA_VERSION,
         "graph_id": GRAPH_ID,
@@ -132,19 +143,12 @@ def build(plan):
                 "adapter",
                 "optional",
                 "report.create+report.fetch",
-                active=any(
-                    adapter.get("delivery_mode") == "document"
-                    for adapter in plan.get("adapters", [])
-                    if isinstance(adapter, dict)
-                ),
-                max_invocations=(
-                    2
-                    if any(
-                        adapter.get("delivery_mode") == "document"
-                        for adapter in plan.get("adapters", [])
-                        if isinstance(adapter, dict)
-                    )
-                    else 0
+                active=delivery_active,
+                max_invocations=2 if delivery_active else 0,
+                **(
+                    {"adapter_id": delivery_adapter}
+                    if delivery_active and delivery_adapter
+                    else {}
                 ),
             ),
             node("complete", "terminal", "once", "return-report"),

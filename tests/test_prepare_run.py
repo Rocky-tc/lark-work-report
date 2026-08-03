@@ -12,7 +12,7 @@ SCRIPT = ROOT / "scripts" / "prepare-run.py"
 MANAGER = ROOT / "scripts" / "manage-run.py"
 
 
-def adapter_manifest(*, parallel=False, batch=False, template=False):
+def adapter_manifest(*, parallel=False, batch=False, template=False, delivery=False):
     listed = {
         "available": True,
         "metadata_only": True,
@@ -34,8 +34,8 @@ def adapter_manifest(*, parallel=False, batch=False, template=False):
                 "available": True,
                 "max_batch_size": 10,
             },
-            "report.create": {"available": False},
-            "report.fetch": {"available": False},
+            "report.create": {"available": delivery},
+            "report.fetch": {"available": delivery},
             "template.fetch": {"available": template},
             "template.upsert": {"available": template},
             "template.delete": {"available": template},
@@ -129,6 +129,98 @@ def cleanup(run_dir):
 
 
 class PrepareRunTests(unittest.TestCase):
+    def test_agent_view_keeps_private_plan_out_of_host_context(self):
+        tmp, result = run_prepare(
+            adapter_manifest(batch=True, template=True),
+            "--agent-view",
+        )
+        try:
+            self.assertEqual(result.returncode, 0, result.stderr)
+            view = json.loads(result.stdout)
+            run_dir = view["run_dir"]
+            self.assertEqual(
+                set(view),
+                {
+                    "schema_version",
+                    "run_dir",
+                    "period",
+                    "identity_call",
+                    "template_call",
+                    "delivery",
+                    "metadata_waves",
+                    "unassigned_domains",
+                },
+            )
+            self.assertLess(len(result.stdout.encode("utf-8")), 1_000)
+            self.assertNotIn("execution_graph", result.stdout)
+            self.assertNotIn("adapters", result.stdout)
+            plan = json.loads(
+                (Path(run_dir) / "run-plan.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(view["identity_call"], plan["identity_call"])
+            self.assertEqual(view["template_call"], plan["template_call"])
+            self.assertEqual(view["delivery"], {"mode": "markdown"})
+            self.assertEqual(view["delivery"], plan["delivery"])
+            self.assertEqual(
+                [
+                    call
+                    for wave in view["metadata_waves"]
+                    for call in wave
+                ],
+                [
+                    {
+                        key: call[key]
+                        for key in ("adapter_id", "operation", "domains")
+                    }
+                    for wave in plan["metadata_waves"]
+                    for call in wave["calls"]
+                ],
+            )
+            self.assertEqual(view["period"]["start"], plan["period"]["start"])
+            self.assertEqual(view["period"]["end"], plan["period"]["end"])
+        finally:
+            if "run_dir" in locals():
+                cleanup(run_dir)
+            tmp.cleanup()
+
+    def test_agent_view_exposes_verified_document_delivery(self):
+        tmp, result = run_prepare(
+            adapter_manifest(batch=True, delivery=True),
+            "--agent-view",
+        )
+        try:
+            self.assertEqual(result.returncode, 0, result.stderr)
+            view = json.loads(result.stdout)
+            run_dir = view["run_dir"]
+            self.assertEqual(
+                view["delivery"],
+                {
+                    "mode": "document",
+                    "adapter_id": "test.adapter",
+                    "create_operation": "report.create",
+                    "fetch_operation": "report.fetch",
+                },
+            )
+            plan = json.loads(
+                (Path(run_dir) / "run-plan.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(view["delivery"], plan["delivery"])
+            graph = json.loads(
+                (Path(run_dir) / "execution-graph.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            deliver = next(
+                node for node in graph["nodes"] if node["id"] == "deliver"
+            )
+            self.assertTrue(deliver["active"])
+            self.assertEqual(deliver["adapter_id"], "test.adapter")
+            self.assertEqual(deliver["max_invocations"], 2)
+        finally:
+            if "run_dir" in locals():
+                cleanup(run_dir)
+            tmp.cleanup()
+
     def test_explicit_request_context_is_validated_and_persisted(self):
         with tempfile.TemporaryDirectory() as request_tmp:
             request_file = Path(request_tmp) / "request.json"
@@ -162,6 +254,9 @@ class PrepareRunTests(unittest.TestCase):
                 plan = json.loads(
                     Path(summary["plan_file"]).read_text(encoding="utf-8")
                 )
+                raw_plan = Path(summary["plan_file"]).read_text(encoding="utf-8")
+                self.assertEqual(raw_plan.count("\n"), 1)
+                self.assertNotIn("\n  ", raw_plan)
                 self.assertTrue(plan["request_context"]["isolated_semantic_stages"])
                 self.assertTrue(plan["request_context"]["explicit"])
                 graph = json.loads(

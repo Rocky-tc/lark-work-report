@@ -28,6 +28,6 @@
 {"results":[{"item_ref":"i0","outcome":"work","record":{}}]}
 ```
 
-模型结果不写 `schema_version`、`package_id` 或 `input_digest`；使用 `commit --package-id` 私下关联阶段包。提交后接口恢复全局身份并按原抓取批次写入证据文件。单项结果失败时只修复 `repair_packet` 指定的 `item_ref`；编译失败时读取 `repair-queue.json`，只处理其中的候选和批次。不得重新采集已验证候选。
+结果不写 `schema_version`、`package_id` 或 `input_digest`；私有关联、身份恢复和证据写入由接口完成。修复只处理 `repair_packet` 或 `repair-queue.json` 指定的候选，不得重新采集已验证项。
 
 需要排查字段、状态冲突或聚类问题时，再读取 [evidence-model.md](evidence-model.md)。

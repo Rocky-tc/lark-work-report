@@ -11,6 +11,8 @@ COMPARE = ROOT / "scripts" / "compare-runs.py"
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import execution_graph  # noqa: E402
+import report_hydration  # noqa: E402
+import usage_metrics  # noqa: E402
 
 
 def write_json(path, payload):
@@ -133,6 +135,59 @@ def prepare_run(path, total_scale=1, model="same-model"):
     )
 
 
+def write_obligation_output(path, *, include_next_action):
+    write_json(
+        path / "ledger.json",
+        {
+            "schema_version": 2,
+            "snapshot": "2026-07-27T00:00:00+08:00",
+            "work": [
+                {
+                    "cluster_id": "c1",
+                    "source_ref": "https://example.com/a",
+                    "source_refs": ["https://example.com/a"],
+                    "status": "completed",
+                    "output": "完成同一事项",
+                    "next_action": "观察真实运行效果",
+                }
+            ],
+            "uncertain": [],
+        },
+    )
+    write_json(
+        path / "report-model.json",
+        {
+            "schema_version": 3,
+            "summary": [
+                {
+                    "result": "完成同一事项",
+                    "evidence_ids": ["c1"],
+                }
+            ],
+            "workstreams": [
+                {
+                    "name": "同一事项",
+                    "status": "completed",
+                    "result": "完成同一事项",
+                    "evidence_ids": ["c1"],
+                }
+            ],
+            "risks": [],
+            "next_actions": (
+                [
+                    {
+                        "action": "观察真实运行效果",
+                        "evidence_ids": ["c1"],
+                    }
+                ]
+                if include_next_action
+                else []
+            ),
+            "uncertain": [],
+        },
+    )
+
+
 class UsageMetricsTests(unittest.TestCase):
     def test_compare_requires_same_data_model_and_quality(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -187,6 +242,104 @@ class UsageMetricsTests(unittest.TestCase):
             self.assertIn(
                 "semantic node provider/model sets differ",
                 comparison["errors"],
+            )
+
+    def test_compare_refuses_candidate_with_omitted_next_action(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            baseline = root / "baseline"
+            candidate = root / "candidate"
+            prepare_run(baseline)
+            prepare_run(candidate)
+            write_obligation_output(baseline, include_next_action=True)
+            write_obligation_output(candidate, include_next_action=False)
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(COMPARE),
+                    "--baseline-run",
+                    str(baseline),
+                    "--candidate-run",
+                    str(candidate),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 3, result.stderr)
+            comparison = json.loads(result.stdout)
+            self.assertFalse(comparison["quality_equal"])
+            self.assertIn("quality signatures differ", comparison["errors"])
+            self.assertEqual(
+                comparison["candidate"]["quality"]["field_obligations"][
+                    "missing"
+                ],
+                ["c1.next_action->next_actions.action"],
+            )
+
+    def test_quality_signature_hydrates_current_v5_short_references(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            source = {
+                "schema_version": 2,
+                "snapshot": "2026-07-27T00:00:00+08:00",
+                "work": [
+                    {
+                        "cluster_id": "c1",
+                        "record_ids": ["record-1"],
+                        "source_ref": "https://example.com/a",
+                        "source_refs": ["https://example.com/a"],
+                        "source_types": ["docs"],
+                        "status_conflict": False,
+                        "workstream": "同一事项",
+                        "status": "completed",
+                        "output": "完成同一事项",
+                        "next_action": "观察真实运行效果",
+                        "priority": 10,
+                    }
+                ],
+                "uncertain": [],
+            }
+            write_json(run_dir / "ledger.json", source)
+            write_json(
+                run_dir / "run-plan.json",
+                {
+                    "period": {
+                        "routed_profile": "weekly",
+                        "start": "2026-07-20T00:00:00+08:00",
+                        "end": "2026-07-27T00:00:00+08:00",
+                        "snapshot": "2026-07-27T00:00:00+08:00",
+                        "title_period": "2026-07-20 至 2026-07-26",
+                    },
+                    "collected_domains": ["docs"],
+                },
+            )
+            write_json(run_dir / "identity.json", {"display_name": "测试用户"})
+            write_json(
+                run_dir / "report-model.json",
+                {
+                    "schema_version": 5,
+                    "ledger_fingerprint": report_hydration.ledger_fingerprint(
+                        source
+                    ),
+                    "summary": [{"evidence_refs": ["w0"]}],
+                    "workstreams": [{"evidence_refs": ["w0"]}],
+                    "risks": [],
+                    "next_actions": [{"evidence_refs": ["w0"]}],
+                    "uncertain": [],
+                },
+            )
+            (run_dir / "report.md").write_text("# 已完成\n", encoding="utf-8")
+
+            signature = usage_metrics.quality_signature(run_dir)
+
+            obligations = signature["field_obligations"]
+            self.assertEqual(obligations["missing"], [])
+            self.assertEqual(obligations["section_evidence"]["summary"], [["c1"]])
+            self.assertEqual(
+                obligations["section_evidence"]["next_actions"],
+                [["c1"]],
             )
 
 
