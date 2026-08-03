@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 
 import execution_graph
+import empty_synthesis
 import request_context
 import usage_metrics
 from runtime_utils import (
@@ -65,6 +66,7 @@ DOWNSTREAM_FILES = (
     "extraction-audit.json",
     "report-model.json",
     "report.md",
+    empty_synthesis.RECEIPT_FILE,
     "repair-queue.json",
 )
 REPAIR_SECTIONS = tuple(REPORT_HYDRATION.SECTION_KINDS)
@@ -930,6 +932,7 @@ def next_stage(run_dir_value):
     _, candidates, batches, waves = load_queue(run_dir)
     normalize_existing_bodies(batches)
     ledger = None
+    empty_synthesis_active = False
     for node_id in graph["stage_runtime_order"]:
         if node_id == "fetch":
             for wave in waves:
@@ -976,13 +979,35 @@ def next_stage(run_dir_value):
             ledger = read_json(ledger_file, "evidence ledger")
         elif node_id == "synthesize":
             ledger = ledger or read_json(run_dir / "ledger.json", "evidence ledger")
-            if not (run_dir / "report-model.json").is_file():
+            empty_synthesis_active = empty_synthesis.is_eligible(graph, ledger)
+            if empty_synthesis_active:
+                empty_synthesis.ensure_model(run_dir, graph, ledger)
+            elif not (run_dir / "report-model.json").is_file():
                 return synthesis_packet(run_dir, ledger)
         elif node_id == "finalize":
-            if not (run_dir / "report.md").is_file():
+            receipt_path = run_dir / empty_synthesis.RECEIPT_FILE
+            bypass_receipt = (
+                empty_synthesis.verify_receipt(run_dir, graph, graph_state)
+                if (
+                    empty_synthesis_active
+                    or receipt_path.is_file()
+                    or receipt_path.is_symlink()
+                )
+                else None
+            )
+            if bypass_receipt is None and (
+                empty_synthesis_active
+                or not (run_dir / "report.md").is_file()
+            ):
                 finalized = FINALIZE.finalize(run_dir)
                 if not finalized["ok"]:
                     raise ValueError("report finalization failed")
+                if empty_synthesis_active:
+                    empty_synthesis.write_receipt(
+                        run_dir,
+                        graph,
+                        graph_state,
+                    )
         elif node_id == "complete":
             ledger = ledger or read_json(run_dir / "ledger.json", "evidence ledger")
             return {
@@ -1651,6 +1676,11 @@ def commit_extract(run_dir, receipt, result):
 
 
 def commit_synthesize(run_dir, receipt, result):
+    bypass_receipt = run_dir / empty_synthesis.RECEIPT_FILE
+    if bypass_receipt.is_file() or bypass_receipt.is_symlink():
+        raise ValueError(
+            "model synthesis cannot coexist with an empty-ledger bypass receipt"
+        )
     if result.get("batches") is not None:
         raise ValueError("synthesis result must not contain batches")
     model = {

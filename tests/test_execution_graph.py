@@ -27,7 +27,7 @@ class ExecutionGraphTests(unittest.TestCase):
             "adapters": [{"delivery_mode": "document"}],
         }
 
-    def test_graph_keeps_existing_semantics_and_one_synthesis(self):
+    def test_new_static_graph_allows_only_empty_ledger_synthesis_bypass(self):
         graph = execution_graph.build(self.plan())
         semantic = [
             node["id"] for node in graph["nodes"] if node["kind"] == "semantic"
@@ -35,13 +35,69 @@ class ExecutionGraphTests(unittest.TestCase):
         self.assertEqual(semantic, ["classify", "extract", "synthesize"])
         synthesize = execution_graph.node_by_id(graph, "synthesize")
         self.assertEqual(synthesize["max_invocations"], 1)
-        self.assertEqual(synthesize["cardinality"], "once")
+        self.assertEqual(synthesize["cardinality"], "optional")
+        self.assertEqual(synthesize["bypass_when"], "ledger_empty")
+        self.assertTrue(
+            graph["invariants"]["empty_ledger_synthesis_bypass"]
+        )
         extract = execution_graph.node_by_id(graph, "extract")
         self.assertEqual(extract["batching"], "bounded")
         self.assertEqual(
             graph["stage_runtime_order"],
             ["fetch", "extract", "compile", "synthesize", "finalize", "complete"],
         )
+
+    def test_compat_graph_without_descriptor_still_requires_synthesis(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            plan = self.plan()
+            (run_dir / "run-plan.json").write_text(
+                json.dumps(plan),
+                encoding="utf-8",
+            )
+
+            graph, state = execution_graph.load_for_run(run_dir)
+
+            synthesize = execution_graph.node_by_id(graph, "synthesize")
+            self.assertEqual(state["mode"], "compat")
+            self.assertEqual(synthesize["cardinality"], "once")
+            self.assertNotIn("bypass_when", synthesize)
+            self.assertFalse(
+                execution_graph.supports_empty_synthesis_bypass(graph)
+            )
+
+    def test_legacy_static_graph_remains_loadable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            plan = self.plan()
+            descriptor = execution_graph.write(
+                run_dir,
+                execution_graph.build(
+                    plan,
+                    empty_ledger_synthesis_bypass=False,
+                ),
+            )
+            plan["execution_graph"] = descriptor
+            (run_dir / "run-plan.json").write_text(
+                json.dumps(plan),
+                encoding="utf-8",
+            )
+
+            graph, state = execution_graph.load_for_run(run_dir)
+
+            self.assertEqual(state["mode"], "static")
+            self.assertFalse(
+                execution_graph.supports_empty_synthesis_bypass(graph)
+            )
+
+    def test_bypass_graph_rejects_an_extra_legacy_synthesis_route(self):
+        graph = execution_graph.build(self.plan())
+        graph["edges"].append(
+            {"from": "compile", "to": "synthesize", "when": "ledger_ready"}
+        )
+
+        with self.assertRaisesRegex(ValueError, "synthesis routing"):
+            execution_graph.validate(graph)
 
     def test_written_graph_is_digest_protected(self):
         with tempfile.TemporaryDirectory() as tmp:

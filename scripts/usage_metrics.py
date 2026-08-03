@@ -28,6 +28,7 @@ RUN_USAGE_FILE = "run-usage.json"
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPORT_HYDRATION = load_script(SCRIPT_DIR, "report_hydration.py")
 VALIDATE_REPORT = load_script(SCRIPT_DIR, "validate-report.py")
+EMPTY_SYNTHESIS = load_script(SCRIPT_DIR, "empty_synthesis.py")
 
 
 def strict_object(value, allowed, label):
@@ -210,6 +211,46 @@ def optional_json(run_dir, name):
     return None
 
 
+def extraction_usage_required(run_dir):
+    semantic_dir = Path(run_dir) / "semantic-bodies"
+    if not semantic_dir.is_dir():
+        return False
+    for path in sorted(semantic_dir.glob("*.json")):
+        if not path.is_file() or path.is_symlink():
+            continue
+        semantic = read_json(path, "normalized fetch body")
+        items = semantic.get("items") if isinstance(semantic, dict) else None
+        if not isinstance(items, list):
+            raise ValueError("normalized fetch body items are invalid")
+        if items:
+            return True
+    return False
+
+
+def verified_bypassed_nodes(run_dir, graph, graph_state):
+    try:
+        receipt = EMPTY_SYNTHESIS.verify_receipt(
+            run_dir,
+            graph,
+            graph_state,
+        )
+    except (OSError, ValueError):
+        return {}
+    if receipt is None:
+        return {}
+    if (
+        receipt.get("node_id") != "synthesize"
+        or receipt.get("reason") != "empty_ledger"
+    ):
+        return {}
+    return {
+        "synthesize": {
+            "reason": receipt["reason"],
+            "receipt_digest": receipt["receipt_digest"],
+        }
+    }
+
+
 def input_candidate_index(queue):
     if not isinstance(queue, dict) or not isinstance(
         queue.get("candidate_index"), dict
@@ -302,7 +343,8 @@ def quality_signature(run_dir):
 def run_summary(run_dir):
     run_dir = Path(run_dir)
     plan = read_json(run_dir / "run-plan.json", "run plan")
-    _, graph_state = execution_graph.load_for_run(run_dir, plan)
+    graph, graph_state = execution_graph.load_for_run(run_dir, plan)
+    bypassed_nodes = verified_bypassed_nodes(run_dir, graph, graph_state)
     metrics = read_json(run_dir / METRICS_FILE, "stage metrics")
     entries = metrics.get("entries")
     if not isinstance(entries, list):
@@ -310,12 +352,14 @@ def run_summary(run_dir):
     node_totals = {}
     models = {}
     missing_real_usage = []
+    recorded_nodes = set()
     for entry in entries:
         if not isinstance(entry, dict):
             raise ValueError("stage metrics entry is invalid")
         node_id = entry.get("node_id") or entry.get("stage")
         if not isinstance(node_id, str):
             raise ValueError("stage metrics entry lacks node_id")
+        recorded_nodes.add(node_id)
         usage = entry.get("usage")
         if usage is None:
             if node_id in execution_graph.SEMANTIC_NODES:
@@ -352,10 +396,19 @@ def run_summary(run_dir):
                 (usage["provider"], usage["model"])
             )
     required_real_nodes = {"classify", "synthesize"}
-    semantic_dir = run_dir / "semantic-bodies"
-    if semantic_dir.is_dir() and any(semantic_dir.glob("*.json")):
+    if extraction_usage_required(run_dir):
         required_real_nodes.add("extract")
     missing_real_usage.extend(required_real_nodes - set(models))
+    missing_real_usage = [
+        node_id
+        for node_id in missing_real_usage
+        if node_id not in bypassed_nodes
+    ]
+    usage_conflicts = []
+    if "synthesize" in bypassed_nodes and "synthesize" in recorded_nodes:
+        usage_conflicts.append(
+            "synthesize usage conflicts with empty-ledger bypass"
+        )
     run_usage = optional_json(run_dir, RUN_USAGE_FILE)
     if run_usage is not None:
         strict_object(
@@ -393,5 +446,7 @@ def run_summary(run_dir):
             for key, values in models.items()
         },
         "missing_real_usage": sorted(set(missing_real_usage)),
+        "usage_conflicts": usage_conflicts,
+        "bypassed_nodes": bypassed_nodes,
         "run_usage": run_usage,
     }

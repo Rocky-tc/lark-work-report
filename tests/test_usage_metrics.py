@@ -11,6 +11,7 @@ COMPARE = ROOT / "scripts" / "compare-runs.py"
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import execution_graph  # noqa: E402
+import empty_synthesis  # noqa: E402
 import report_hydration  # noqa: E402
 import usage_metrics  # noqa: E402
 
@@ -30,8 +31,11 @@ def prepare_run(path, total_scale=1, model="same-model"):
             "routed_profile": "weekly",
             "start": "2026-07-20T00:00:00+08:00",
             "end": "2026-07-27T00:00:00+08:00",
+            "snapshot": "2026-07-27T00:00:00+08:00",
+            "title_period": "2026-07-20 至 2026-07-26",
         },
         "requested_domains": ["docs"],
+        "collected_domains": ["docs"],
         "identity_call": None,
         "template_call": None,
         "metadata_waves": [],
@@ -188,7 +192,181 @@ def write_obligation_output(path, *, include_next_action):
     )
 
 
+def remove_node_metric(path, node_id):
+    metrics_path = path / "stage-metrics.json"
+    metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+    metrics["entries"] = [
+        entry
+        for entry in metrics["entries"]
+        if entry.get("node_id") != node_id
+    ]
+    write_json(metrics_path, metrics)
+
+
+def sync_aggregate_usage(path):
+    metrics = json.loads(
+        (path / "stage-metrics.json").read_text(encoding="utf-8")
+    )
+    entries = metrics["entries"]
+    aggregate = json.loads(
+        (path / "run-usage.json").read_text(encoding="utf-8")
+    )
+    aggregate["elapsed_ms"] = sum(entry["elapsed_ms"] for entry in entries)
+    aggregate["usage"]["input_tokens"] = sum(
+        entry["usage"]["input_tokens"] for entry in entries
+    )
+    aggregate["usage"]["output_tokens"] = sum(
+        entry["usage"]["output_tokens"] for entry in entries
+    )
+    aggregate["usage"]["total_tokens"] = (
+        aggregate["usage"]["input_tokens"]
+        + aggregate["usage"]["output_tokens"]
+    )
+    write_json(path / "run-usage.json", aggregate)
+
+
+def configure_empty_run(
+    path,
+    *,
+    keep_synthesis_usage,
+    write_bypass_receipt,
+    report="# 空报告\n",
+):
+    write_json(
+        path / "semantic-bodies" / "a.json",
+        {
+            "schema_version": 1,
+            "items": [],
+            "access_gaps": [
+                {
+                    "global_id": "a",
+                    "outcome": "access_gap",
+                    "reason": "forbidden",
+                }
+            ],
+        },
+    )
+    ledger = {
+        "schema_version": 2,
+        "snapshot": "2026-07-27T00:00:00+08:00",
+        "work": [],
+        "uncertain": [],
+    }
+    write_json(path / "ledger.json", ledger)
+    write_json(
+        path / "extraction-audit.json",
+        {
+            "schema_version": 1,
+            "total_count": 1,
+            "processed_count": 1,
+            "outcome_counts": {"access_gap": 1},
+            "access_gaps": [{"reason": "forbidden"}],
+        },
+    )
+    write_json(path / "report-model.json", empty_synthesis.canonical_model(ledger))
+    (path / "report.md").write_text(report, encoding="utf-8")
+    remove_node_metric(path, "extract")
+    if not keep_synthesis_usage:
+        remove_node_metric(path, "synthesize")
+    sync_aggregate_usage(path)
+    if write_bypass_receipt:
+        plan = json.loads((path / "run-plan.json").read_text(encoding="utf-8"))
+        graph, graph_state = execution_graph.load_for_run(path, plan)
+        empty_synthesis.write_receipt(path, graph, graph_state)
+
+
 class UsageMetricsTests(unittest.TestCase):
+    def test_access_gap_only_semantic_bodies_do_not_require_extract_usage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            prepare_run(run_dir)
+            write_json(
+                run_dir / "semantic-bodies" / "a.json",
+                {
+                    "schema_version": 1,
+                    "items": [],
+                    "access_gaps": [
+                        {
+                            "global_id": "a",
+                            "outcome": "access_gap",
+                            "reason": "forbidden",
+                        }
+                    ],
+                },
+            )
+            remove_node_metric(run_dir, "extract")
+
+            summary = usage_metrics.run_summary(run_dir)
+
+            self.assertNotIn("extract", summary["missing_real_usage"])
+
+    def test_nonempty_semantic_body_requires_extract_usage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            prepare_run(run_dir)
+            remove_node_metric(run_dir, "extract")
+
+            summary = usage_metrics.run_summary(run_dir)
+
+            self.assertIn("extract", summary["missing_real_usage"])
+
+    def test_valid_empty_synthesis_receipt_exempts_and_reports_bypass(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            prepare_run(run_dir)
+            configure_empty_run(
+                run_dir,
+                keep_synthesis_usage=False,
+                write_bypass_receipt=True,
+            )
+
+            summary = usage_metrics.run_summary(run_dir)
+
+            self.assertEqual(summary["missing_real_usage"], [])
+            self.assertEqual(
+                summary["bypassed_nodes"]["synthesize"]["reason"],
+                "empty_ledger",
+            )
+            self.assertTrue(
+                summary["bypassed_nodes"]["synthesize"][
+                    "receipt_digest"
+                ].startswith("sha256:")
+            )
+            self.assertNotIn("synthesize", summary["node_totals"])
+
+    def test_stale_empty_synthesis_receipt_does_not_exempt_usage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            prepare_run(run_dir)
+            configure_empty_run(
+                run_dir,
+                keep_synthesis_usage=False,
+                write_bypass_receipt=True,
+            )
+            (run_dir / "report.md").write_text("# 被改写\n", encoding="utf-8")
+
+            summary = usage_metrics.run_summary(run_dir)
+
+            self.assertEqual(summary["bypassed_nodes"], {})
+            self.assertIn("synthesize", summary["missing_real_usage"])
+
+    def test_empty_synthesis_receipt_conflicts_with_synthesis_metric(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            prepare_run(run_dir)
+            configure_empty_run(
+                run_dir,
+                keep_synthesis_usage=True,
+                write_bypass_receipt=True,
+            )
+
+            summary = usage_metrics.run_summary(run_dir)
+
+            self.assertEqual(
+                summary["usage_conflicts"],
+                ["synthesize usage conflicts with empty-ledger bypass"],
+            )
+
     def test_compare_requires_same_data_model_and_quality(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -241,6 +419,228 @@ class UsageMetricsTests(unittest.TestCase):
             self.assertFalse(comparison["comparable"])
             self.assertIn(
                 "semantic node provider/model sets differ",
+                comparison["errors"],
+            )
+
+    def test_compare_allows_valid_asymmetric_synthesis_bypass(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            baseline = root / "baseline"
+            candidate = root / "candidate"
+            prepare_run(baseline)
+            prepare_run(candidate)
+            configure_empty_run(
+                baseline,
+                keep_synthesis_usage=True,
+                write_bypass_receipt=False,
+            )
+            configure_empty_run(
+                candidate,
+                keep_synthesis_usage=False,
+                write_bypass_receipt=True,
+            )
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(COMPARE),
+                    "--baseline-run",
+                    str(baseline),
+                    "--candidate-run",
+                    str(candidate),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            comparison = json.loads(result.stdout)
+            self.assertTrue(comparison["comparable"])
+            self.assertEqual(
+                comparison["candidate"]["bypassed_nodes"]["synthesize"][
+                    "reason"
+                ],
+                "empty_ledger",
+            )
+            self.assertEqual(
+                comparison["by_node"]["synthesize"]["invocations"],
+                {
+                    "baseline": 1,
+                    "candidate": 0,
+                    "delta": -1,
+                    "delta_percent": -100.0,
+                },
+            )
+
+    def test_compare_rejects_asymmetric_bypass_when_reports_differ(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            baseline = root / "baseline"
+            candidate = root / "candidate"
+            prepare_run(baseline)
+            prepare_run(candidate)
+            configure_empty_run(
+                baseline,
+                keep_synthesis_usage=True,
+                write_bypass_receipt=False,
+                report="# 基线报告\n",
+            )
+            configure_empty_run(
+                candidate,
+                keep_synthesis_usage=False,
+                write_bypass_receipt=True,
+                report="# 候选报告\n",
+            )
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(COMPARE),
+                    "--baseline-run",
+                    str(baseline),
+                    "--candidate-run",
+                    str(candidate),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 3, result.stderr)
+            comparison = json.loads(result.stdout)
+            self.assertFalse(comparison["comparable"])
+            self.assertIn(
+                "reports differ across asymmetric synthesis bypass",
+                comparison["errors"],
+            )
+
+    def test_compare_rejects_bypass_receipt_with_synthesis_metric(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            baseline = root / "baseline"
+            candidate = root / "candidate"
+            prepare_run(baseline)
+            prepare_run(candidate)
+            configure_empty_run(
+                baseline,
+                keep_synthesis_usage=True,
+                write_bypass_receipt=False,
+                report="# 基线报告\n",
+            )
+            configure_empty_run(
+                candidate,
+                keep_synthesis_usage=True,
+                write_bypass_receipt=True,
+                report="# 候选报告\n",
+            )
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(COMPARE),
+                    "--baseline-run",
+                    str(baseline),
+                    "--candidate-run",
+                    str(candidate),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 3, result.stderr)
+            comparison = json.loads(result.stdout)
+            self.assertFalse(comparison["comparable"])
+            self.assertIn(
+                "candidate has invalid usage state: synthesize usage conflicts "
+                "with empty-ledger bypass",
+                comparison["errors"],
+            )
+            self.assertIn(
+                "reports differ across asymmetric synthesis bypass",
+                comparison["errors"],
+            )
+
+    def test_compare_rejects_missing_synthesis_without_valid_receipt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            baseline = root / "baseline"
+            candidate = root / "candidate"
+            prepare_run(baseline)
+            prepare_run(candidate)
+            configure_empty_run(
+                baseline,
+                keep_synthesis_usage=True,
+                write_bypass_receipt=False,
+            )
+            configure_empty_run(
+                candidate,
+                keep_synthesis_usage=False,
+                write_bypass_receipt=False,
+            )
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(COMPARE),
+                    "--baseline-run",
+                    str(baseline),
+                    "--candidate-run",
+                    str(candidate),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 3, result.stderr)
+            comparison = json.loads(result.stdout)
+            self.assertFalse(comparison["comparable"])
+            self.assertIn(
+                "candidate lacks host-reported usage for: synthesize",
+                comparison["errors"],
+            )
+
+    def test_compare_rejects_other_missing_node_despite_synthesis_bypass(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            baseline = root / "baseline"
+            candidate = root / "candidate"
+            prepare_run(baseline)
+            prepare_run(candidate)
+            configure_empty_run(
+                baseline,
+                keep_synthesis_usage=True,
+                write_bypass_receipt=False,
+            )
+            configure_empty_run(
+                candidate,
+                keep_synthesis_usage=False,
+                write_bypass_receipt=True,
+            )
+            remove_node_metric(candidate, "classify")
+            sync_aggregate_usage(candidate)
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(COMPARE),
+                    "--baseline-run",
+                    str(baseline),
+                    "--candidate-run",
+                    str(candidate),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 3, result.stderr)
+            comparison = json.loads(result.stdout)
+            self.assertFalse(comparison["comparable"])
+            self.assertIn(
+                "candidate lacks host-reported usage for: classify",
                 comparison["errors"],
             )
 

@@ -41,7 +41,7 @@ def node(node_id, kind, cardinality, handler, **fields):
     }
 
 
-def build(plan):
+def build(plan, *, empty_ledger_synthesis_bypass=True):
     """Build the fixed graph with only per-run activation metadata."""
     metadata_waves = plan.get("metadata_waves", [])
     template_active = plan.get("template_call") is not None
@@ -126,11 +126,20 @@ def build(plan):
             node(
                 "synthesize",
                 "semantic",
-                "once",
+                (
+                    "optional"
+                    if empty_ledger_synthesis_bypass
+                    else "once"
+                ),
                 "stage-io.synthesize",
                 contract="synthesis-contract.md",
                 context_mode="fresh_if_explicit",
                 max_invocations=1,
+                **(
+                    {"bypass_when": "ledger_empty"}
+                    if empty_ledger_synthesis_bypass
+                    else {}
+                ),
             ),
             node(
                 "finalize",
@@ -166,7 +175,26 @@ def build(plan):
             {"from": "fetch", "to": "extract", "when": "fetch_complete"},
             {"from": "extract", "to": "extract", "when": "pending_extract_batch"},
             {"from": "extract", "to": "compile", "when": "extraction_complete"},
-            {"from": "compile", "to": "synthesize", "when": "ledger_ready"},
+            {
+                "from": "compile",
+                "to": "synthesize",
+                "when": (
+                    "ledger_nonempty"
+                    if empty_ledger_synthesis_bypass
+                    else "ledger_ready"
+                ),
+            },
+            *(
+                [
+                    {
+                        "from": "compile",
+                        "to": "finalize",
+                        "when": "ledger_empty_model_ready",
+                    }
+                ]
+                if empty_ledger_synthesis_bypass
+                else []
+            ),
             {"from": "synthesize", "to": "finalize", "when": "model_ready"},
             {"from": "finalize", "to": "deliver", "when": "deliver.active"},
             {"from": "finalize", "to": "complete", "when": "not deliver.active"},
@@ -181,6 +209,11 @@ def build(plan):
             "short_references": True,
             "deterministic_hydration": True,
             "incremental_repair": True,
+            **(
+                {"empty_ledger_synthesis_bypass": True}
+                if empty_ledger_synthesis_bypass
+                else {}
+            ),
         },
     }
     validate(graph)
@@ -215,11 +248,21 @@ def validate(graph):
     if semantic != SEMANTIC_NODES:
         raise ValueError("execution graph changes the semantic node set")
     synthesize = node_map["synthesize"]
-    if (
-        synthesize.get("cardinality") != "once"
-        or synthesize.get("max_invocations") != 1
-    ):
-        raise ValueError("execution graph must keep one synthesis invocation")
+    legacy_synthesis = (
+        synthesize.get("cardinality") == "once"
+        and synthesize.get("max_invocations") == 1
+        and "bypass_when" not in synthesize
+    )
+    optional_synthesis = (
+        synthesize.get("cardinality") == "optional"
+        and synthesize.get("max_invocations") == 1
+        and synthesize.get("bypass_when") == "ledger_empty"
+    )
+    if not (legacy_synthesis or optional_synthesis):
+        raise ValueError(
+            "execution graph must keep at most one synthesis invocation and "
+            "only bypass an empty ledger"
+        )
     extract = node_map["extract"]
     if extract.get("batching") != "bounded":
         raise ValueError("execution graph must keep bounded batch extraction")
@@ -237,6 +280,27 @@ def validate(graph):
             or not edge["when"]
         ):
             raise ValueError("execution graph contains an invalid edge")
+    edge_set = {
+        (edge["from"], edge["to"], edge["when"])
+        for edge in edges
+    }
+    required_synthesis_edges = (
+        {
+            ("compile", "finalize", "ledger_empty_model_ready"),
+            ("compile", "synthesize", "ledger_nonempty"),
+            ("synthesize", "finalize", "model_ready"),
+        }
+        if optional_synthesis
+        else {
+            ("compile", "synthesize", "ledger_ready"),
+            ("synthesize", "finalize", "model_ready"),
+        }
+    )
+    actual_synthesis_edges = {
+        edge for edge in edge_set if edge[0] in {"compile", "synthesize"}
+    }
+    if actual_synthesis_edges != required_synthesis_edges:
+        raise ValueError("execution graph synthesis routing is invalid")
     invariants = graph.get("invariants")
     if not isinstance(invariants, dict):
         raise ValueError("execution graph requires invariants")
@@ -248,6 +312,11 @@ def validate(graph):
         "short_references": True,
         "deterministic_hydration": True,
         "incremental_repair": True,
+        **(
+            {"empty_ledger_synthesis_bypass": True}
+            if optional_synthesis
+            else {}
+        ),
     }
     if invariants != expected:
         raise ValueError("execution graph invariants are invalid")
@@ -271,7 +340,7 @@ def load_for_run(run_dir, plan=None):
     plan = plan or read_json(run_dir / "run-plan.json", "run plan")
     descriptor = plan.get("execution_graph")
     if descriptor is None:
-        graph = build(plan)
+        graph = build(plan, empty_ledger_synthesis_bypass=False)
         return graph, {
             "graph_id": GRAPH_ID,
             "digest": canonical_digest(graph),
@@ -314,3 +383,15 @@ def node_by_id(graph, node_id):
         if value["id"] == node_id:
             return value
     raise ValueError(f"execution graph node is missing: {node_id}")
+
+
+def supports_empty_synthesis_bypass(graph):
+    """Return whether a validated graph explicitly enables the safe bypass."""
+    synthesize = node_by_id(graph, "synthesize")
+    return (
+        synthesize.get("cardinality") == "optional"
+        and synthesize.get("max_invocations") == 1
+        and synthesize.get("bypass_when") == "ledger_empty"
+        and graph.get("invariants", {}).get("empty_ledger_synthesis_bypass")
+        is True
+    )

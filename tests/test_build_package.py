@@ -88,6 +88,10 @@ class BuildPackageTests(unittest.TestCase):
                 names,
             )
             self.assertIn(
+                "lark-work-report/scripts/empty_synthesis.py",
+                names,
+            )
+            self.assertIn(
                 "lark-work-report/scripts/usage_metrics.py",
                 names,
             )

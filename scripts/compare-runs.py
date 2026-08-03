@@ -6,6 +6,7 @@ import json
 import sys
 from pathlib import Path
 
+import execution_graph
 import usage_metrics
 from runtime_utils import emit_json, write_json_atomic
 
@@ -16,13 +17,57 @@ def percent(delta, baseline):
     return round(delta * 100 / baseline, 2)
 
 
+def synthesis_bypassed(summary):
+    bypassed = summary.get("bypassed_nodes")
+    return isinstance(bypassed, dict) and "synthesize" in bypassed
+
+
+def compatible_node_models(baseline, candidate):
+    models = {}
+    asymmetric_synthesis = (
+        synthesis_bypassed(baseline) != synthesis_bypassed(candidate)
+    )
+    incompatible = False
+    node_ids = sorted(
+        set(baseline["models"])
+        | set(candidate["models"])
+        | set(execution_graph.SEMANTIC_NODES)
+    )
+    for node_id in node_ids:
+        before = baseline["models"].get(node_id)
+        after = candidate["models"].get(node_id)
+        if before == after:
+            if before is not None:
+                models[node_id] = before
+            continue
+        if node_id == "synthesize":
+            if before and after is None and synthesis_bypassed(candidate):
+                models[node_id] = before
+                continue
+            if after and before is None and synthesis_bypassed(baseline):
+                models[node_id] = after
+                continue
+        incompatible = True
+    return models, asymmetric_synthesis, incompatible
+
+
+def completed_report_digest(summary):
+    path = Path(summary["run_dir"]) / "report.md"
+    if path.is_file() and not path.is_symlink():
+        return usage_metrics.file_digest(path)
+    return None
+
+
 def compare(baseline_dir, candidate_dir):
     baseline = usage_metrics.run_summary(baseline_dir)
     candidate = usage_metrics.run_summary(candidate_dir)
     errors = []
     if baseline["dataset_fingerprint"] != candidate["dataset_fingerprint"]:
         errors.append("dataset fingerprints differ")
-    if baseline["models"] != candidate["models"]:
+    compatible_models, asymmetric_synthesis, incompatible_models = (
+        compatible_node_models(baseline, candidate)
+    )
+    if incompatible_models:
         errors.append("semantic node provider/model sets differ")
     if baseline["missing_real_usage"]:
         errors.append(
@@ -34,6 +79,9 @@ def compare(baseline_dir, candidate_dir):
             "candidate lacks host-reported usage for: "
             + ", ".join(candidate["missing_real_usage"])
         )
+    for label, summary in (("baseline", baseline), ("candidate", candidate)):
+        for conflict in summary.get("usage_conflicts", []):
+            errors.append(f"{label} has invalid usage state: {conflict}")
     if baseline["run_usage"] is None:
         errors.append("baseline lacks host-reported aggregate run usage")
     if candidate["run_usage"] is None:
@@ -59,6 +107,14 @@ def compare(baseline_dir, candidate_dir):
     quality_equal = baseline["quality"] == candidate["quality"]
     if not quality_equal:
         errors.append("quality signatures differ")
+    if asymmetric_synthesis:
+        baseline_report_digest = completed_report_digest(baseline)
+        candidate_report_digest = completed_report_digest(candidate)
+        if (
+            baseline_report_digest is None
+            or baseline_report_digest != candidate_report_digest
+        ):
+            errors.append("reports differ across asymmetric synthesis bypass")
     nodes = sorted(
         set(baseline["node_totals"]) | set(candidate["node_totals"])
     )
@@ -120,7 +176,7 @@ def compare(baseline_dir, candidate_dir):
             == candidate["dataset_fingerprint"]
             else None
         ),
-        "models": baseline["models"] if baseline["models"] == candidate["models"] else None,
+        "models": compatible_models if not incompatible_models else None,
         "aggregate_model": (
             baseline_run_model
             if baseline_run_model == candidate_run_model

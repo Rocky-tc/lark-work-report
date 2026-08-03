@@ -1,3 +1,4 @@
+import hashlib
 import json
 import subprocess
 import sys
@@ -160,6 +161,69 @@ class StageIoTests(unittest.TestCase):
         request = json.loads(request_path.read_text(encoding="utf-8"))
         request["items"][0].update(fields)
         write_json(request_path, request)
+
+    def enable_static_graph(self, *, empty_ledger_synthesis_bypass=True):
+        scripts = ROOT / "scripts"
+        sys.path.insert(0, str(scripts))
+        try:
+            import execution_graph
+
+            plan_path = self.run_dir / "run-plan.json"
+            plan = json.loads(plan_path.read_text(encoding="utf-8"))
+            descriptor = execution_graph.write(
+                self.run_dir,
+                execution_graph.build(
+                    plan,
+                    empty_ledger_synthesis_bypass=(
+                        empty_ledger_synthesis_bypass
+                    ),
+                ),
+            )
+            plan["execution_graph"] = descriptor
+            write_json(plan_path, plan)
+        finally:
+            sys.path.remove(str(scripts))
+        return descriptor
+
+    def template_profile(self):
+        names = {
+            "summary": ("今日看点", "本周看点", "月度看点"),
+            "progress": ("今日成果", "本周成果", "月度成果"),
+            "risks": ("风险提醒", "风险提醒", "风险提醒"),
+            "next": ("明日计划", "下周计划", "下月计划"),
+            "uncertain": ("请我确认", "请我确认", "请我确认"),
+            "coverage": ("依据与范围", "依据与范围", "依据与范围"),
+        }
+        return {
+            "schema_version": 1,
+            "template_id": "default",
+            "source_fingerprint": "sha256:"
+            + hashlib.sha256(b"sample").hexdigest(),
+            "title_pattern": "{subject}{period_label}｜{period_range}",
+            "sections": {
+                slot: {
+                    "labels": dict(
+                        zip(("daily", "weekly", "monthly"), labels)
+                    ),
+                    "item_style": "bullet",
+                }
+                for slot, labels in names.items()
+            },
+            "workstream_layout": "inline",
+            "field_labels": {
+                "impact": "影响",
+                "decision": "决策",
+                "progress": "进展",
+                "assistance": "需协助",
+                "purpose": "目标",
+                "reason": "原因",
+            },
+            "tone": {
+                "register": "concise",
+                "voice": "neutral",
+                "density": "compact",
+            },
+        }
 
     def semantic_record(self, **fields):
         return {
@@ -325,22 +389,215 @@ class StageIoTests(unittest.TestCase):
         self.assertEqual(audit["outcome_counts"]["access_gap"], 1)
         self.assertFalse(staging.exists())
 
-    def test_static_execution_graph_drives_stage_state(self):
-        scripts = ROOT / "scripts"
-        sys.path.insert(0, str(scripts))
-        try:
-            import execution_graph
+    def test_new_static_graph_bypasses_synthesis_for_empty_access_gap_ledger(self):
+        descriptor = self.enable_static_graph()
+        state = self.next()
+        packet = self.load_packet(state)
+        committed = self.commit_private(
+            {
+                "batches": [
+                    {
+                        "batch_ref": "b0",
+                        "results": [
+                            {
+                                "item_ref": "i0",
+                                "outcome": "access_gap",
+                                "reason": "当前身份没有访问权限",
+                            }
+                        ],
+                    }
+                ]
+            },
+            "static-gap-fetch-result.json",
+            state,
+        )
 
-            plan_path = self.run_dir / "run-plan.json"
-            plan = json.loads(plan_path.read_text(encoding="utf-8"))
-            descriptor = execution_graph.write(
-                self.run_dir,
-                execution_graph.build(plan),
-            )
-            plan["execution_graph"] = descriptor
-            write_json(plan_path, plan)
-        finally:
-            sys.path.remove(str(scripts))
+        self.assertEqual(committed["next"]["stage"], "complete")
+        model = json.loads(
+            (self.run_dir / "report-model.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(model["schema_version"], 5)
+        for section in (
+            "summary",
+            "workstreams",
+            "risks",
+            "next_actions",
+            "uncertain",
+        ):
+            self.assertEqual(model[section], [])
+        report = (self.run_dir / "report.md").read_text(encoding="utf-8")
+        self.assertIn("## 本周摘要\n- 无", report)
+        self.assertIn("覆盖说明", report)
+        self.assertEqual(
+            hashlib.sha256(
+                (self.run_dir / "report-model.json").read_bytes()
+            ).hexdigest(),
+            "ae5606802942b2f4317e07e6c0136203bb94dec49ab163b6ecfebf6ff5c5983e",
+        )
+        self.assertEqual(
+            hashlib.sha256(report.encode("utf-8")).hexdigest(),
+            "315a64289f476e1f3b19d8f325bbf59074a600a56e44314740fb9a935d658e1f",
+        )
+        receipt_path = (
+            self.run_dir / "stage-receipts" / "synthesize-empty-ledger.json"
+        )
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        self.assertEqual(receipt["graph_digest"], descriptor["digest"])
+        self.assertEqual(receipt["ledger_fingerprint"], model["ledger_fingerprint"])
+        self.assertTrue(receipt["report_model_digest"].startswith("sha256:"))
+        self.assertTrue(receipt["report_digest"].startswith("sha256:"))
+        metrics = json.loads(
+            (self.run_dir / "stage-metrics.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            [entry["stage"] for entry in metrics["entries"]],
+            ["fetch"],
+        )
+
+        receipt_path.unlink()
+        (self.run_dir / "report.md").unlink()
+        resumed = self.next()
+        self.assertEqual(resumed["stage"], "complete")
+        self.assertTrue(receipt_path.is_file())
+        self.assertTrue((self.run_dir / "report.md").is_file())
+
+        ledger_path = self.run_dir / "ledger.json"
+        ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+        ledger["work"] = [{"cluster_id": "changed-after-receipt"}]
+        write_json(ledger_path, ledger)
+        rejected = run(STAGE_IO, "next", "--run-dir", str(self.run_dir))
+        self.assertEqual(rejected.returncode, 2)
+        self.assertIn("receipt is not eligible", rejected.stderr)
+
+    def test_empty_ledger_bypass_still_applies_template_in_finalizer(self):
+        write_json(
+            self.run_dir / "template-profile.json",
+            self.template_profile(),
+        )
+        self.enable_static_graph()
+        state = self.next()
+        self.load_packet(state)
+        committed = self.commit_private(
+            {
+                "batches": [
+                    {
+                        "batch_ref": "b0",
+                        "results": [
+                            {
+                                "item_ref": "i0",
+                                "outcome": "access_gap",
+                                "reason": "当前身份没有访问权限",
+                            }
+                        ],
+                    }
+                ]
+            },
+            "templated-gap-fetch-result.json",
+            state,
+        )
+
+        self.assertEqual(committed["next"]["stage"], "complete")
+        report = (self.run_dir / "report.md").read_text(encoding="utf-8")
+        self.assertIn("# 张三个人周报｜2026-07-20 至 2026-07-26", report)
+        for heading in (
+            "本周看点",
+            "本周成果",
+            "风险提醒",
+            "下周计划",
+            "请我确认",
+        ):
+            self.assertIn(f"## {heading}\n- 无", report)
+        self.assertIn("覆盖说明", report)
+        self.assertEqual(
+            hashlib.sha256(report.encode("utf-8")).hexdigest(),
+            "8292853cfe9ee7d2f4dda06bca899416355afa8033097650b5d394b58ade2824",
+        )
+
+    def test_empty_ledger_bypass_after_private_content_matches_snapshot(self):
+        self.enable_static_graph()
+        state = self.next()
+        self.load_packet(state)
+        state = self.commit_private(
+            {
+                "batches": [
+                    {
+                        "batch_ref": "b0",
+                        "results": [
+                            {
+                                "item_ref": "i0",
+                                "content_type": "text",
+                                "content": "今晚聚餐，家里临时有事。",
+                                "context": {},
+                            }
+                        ],
+                    }
+                ]
+            },
+            "private-fetch-result.json",
+            state,
+        )["next"]
+        self.load_packet(state)
+        committed = self.commit_private(
+            {
+                "results": [
+                    {"item_ref": "i0", "outcome": "discarded_private"}
+                ]
+            },
+            "private-extract-result.json",
+            state,
+        )
+
+        self.assertEqual(committed["next"]["stage"], "complete")
+        report = (self.run_dir / "report.md").read_bytes()
+        self.assertEqual(
+            hashlib.sha256(report).hexdigest(),
+            "142773732d9cfec24ead1b973f87ac1101cda43638433777a062652af70f79ba",
+        )
+        self.assertNotIn("聚餐".encode("utf-8"), report)
+
+    def test_new_static_graph_keeps_synthesis_for_nonempty_ledger(self):
+        self.enable_static_graph()
+
+        committed = self.complete_extract()
+
+        self.assertEqual(committed["next"]["stage"], "synthesize")
+        self.assertFalse(
+            (
+                self.run_dir
+                / "stage-receipts"
+                / "synthesize-empty-ledger.json"
+            ).exists()
+        )
+
+    def test_legacy_static_graph_still_synthesizes_an_empty_ledger(self):
+        self.enable_static_graph(empty_ledger_synthesis_bypass=False)
+        state = self.next()
+        self.load_packet(state)
+
+        committed = self.commit_private(
+            {
+                "batches": [
+                    {
+                        "batch_ref": "b0",
+                        "results": [
+                            {
+                                "item_ref": "i0",
+                                "outcome": "access_gap",
+                                "reason": "当前身份没有访问权限",
+                            }
+                        ],
+                    }
+                ]
+            },
+            "legacy-static-gap-fetch-result.json",
+            state,
+        )
+
+        self.assertEqual(committed["next"]["stage"], "synthesize")
+        self.assertEqual(committed["next"]["graph_mode"], "static")
+
+    def test_static_execution_graph_drives_stage_state(self):
+        self.enable_static_graph()
         state = self.next()
         self.assertEqual(state["graph_mode"], "static")
         self.assertEqual(state["node_id"], "fetch")
@@ -811,6 +1068,42 @@ class StageIoTests(unittest.TestCase):
         self.assertEqual(committed["next"]["stage"], "complete")
         report = (self.run_dir / "report.md").read_text(encoding="utf-8")
         self.assertIn("完成实现并通过测试", report)
+
+    def test_model_synthesis_rejects_a_residual_empty_bypass_receipt(self):
+        committed = self.complete_extract()
+        state = committed["next"]
+        packet = self.load_packet(state)
+        write_json(
+            self.run_dir
+            / "stage-receipts"
+            / "synthesize-empty-ledger.json",
+            {"schema_version": 1},
+        )
+        result_file = self.run_dir / "synthesis-with-bypass-receipt.json"
+        write_json(
+            result_file,
+            self.stage_result(
+                packet,
+                summary=[{"evidence_refs": ["w0"]}],
+                workstreams=[{"evidence_refs": ["w0"]}],
+                risks=[],
+                next_actions=[{"evidence_refs": ["w0"]}],
+                uncertain=[],
+            ),
+        )
+
+        result = run(
+            STAGE_IO,
+            "commit",
+            "--run-dir",
+            str(self.run_dir),
+            "--result-file",
+            str(result_file),
+        )
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("cannot coexist", result.stderr)
+        self.assertFalse((self.run_dir / "report-model.json").exists())
 
     def test_stale_packet_is_rejected(self):
         state = self.next()
